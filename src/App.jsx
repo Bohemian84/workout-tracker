@@ -1,4 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 
 const STORAGE_KEY = "workout-tracker-v1";
 
@@ -51,6 +54,29 @@ function getVolume(entry) {
 function getWeekDifference(fromDate, toDate) {
   const diffMs = new Date(toDate).getTime() - new Date(fromDate).getTime();
   return Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24 * 7)));
+}
+
+function loadLocalSessions() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch (err) {
+    console.error("Failed to load saved data", err);
+    return [];
+  }
+}
+
+function mergeSessions(primarySessions, secondarySessions) {
+  const seen = new Set();
+  return [...primarySessions, ...secondarySessions].filter((session) => {
+    if (!session?.id || seen.has(session.id)) return false;
+    seen.add(session.id);
+    return true;
+  });
+}
+
+function getMigrationKey(uid) {
+  return `${STORAGE_KEY}-cloud-migrated-${uid}`;
 }
 
 function buildRecommendation(entry) {
@@ -106,16 +132,17 @@ export default function App() {
   const [weight, setWeight] = useState("135");
 
   const [draftExercises, setDraftExercises] = useState([]);
+  const [showRecommendations, setShowRecommendations] = useState(true);
+  const [showHistory, setShowHistory] = useState(true);
+  const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(!firebaseConfigured);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(firebaseConfigured ? "Checking sign-in..." : "Local-only mode");
+  const [syncError, setSyncError] = useState("");
+  const lastCloudSessionsJson = useRef("");
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        setSessions(JSON.parse(saved));
-      }
-    } catch (err) {
-      console.error("Failed to load saved data", err);
-    }
+    setSessions(loadLocalSessions());
   }, []);
 
   useEffect(() => {
@@ -125,6 +152,95 @@ export default function App() {
       console.error("Failed to save data", err);
     }
   }, [sessions]);
+
+  useEffect(() => {
+    if (!auth) return undefined;
+
+    return onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthReady(true);
+      setCloudReady(false);
+      setSyncError("");
+      setSyncStatus(currentUser ? "Loading cloud history..." : "Signed out. Saving on this device only.");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!user || !db) return undefined;
+
+    const historyRef = doc(db, "users", user.uid, "workoutData", "history");
+
+    return onSnapshot(
+      historyRef,
+      async (snapshot) => {
+        const remoteSessions = Array.isArray(snapshot.data()?.sessions) ? snapshot.data().sessions : [];
+        const localSessions = loadLocalSessions();
+        const migrationKey = getMigrationKey(user.uid);
+        const alreadyMigrated = localStorage.getItem(migrationKey) === "true";
+        const mergedSessions = alreadyMigrated ? remoteSessions : mergeSessions(remoteSessions, localSessions);
+        const hasLocalSessionsToUpload = !alreadyMigrated && mergedSessions.length > remoteSessions.length;
+
+        lastCloudSessionsJson.current = JSON.stringify(mergedSessions);
+        setSessions(mergedSessions);
+        setCloudReady(true);
+        setSyncStatus(hasLocalSessionsToUpload ? "Uploading local history..." : "Cloud history loaded.");
+
+        if (hasLocalSessionsToUpload) {
+          try {
+            await setDoc(
+              historyRef,
+              {
+                sessions: mergedSessions,
+                updatedAt: serverTimestamp()
+              },
+              { merge: true }
+            );
+            lastCloudSessionsJson.current = JSON.stringify(mergedSessions);
+            localStorage.setItem(migrationKey, "true");
+            setSyncStatus("Local history added to your account.");
+          } catch (err) {
+            console.error("Failed to upload local history", err);
+            setSyncError("Could not upload local history. Your device copy is still saved.");
+          }
+        } else {
+          localStorage.setItem(migrationKey, "true");
+        }
+      },
+      (err) => {
+        console.error("Failed to sync cloud history", err);
+        setCloudReady(false);
+        setSyncError("Could not load cloud history. Changes are still saved on this device.");
+      }
+    );
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !db || !cloudReady) return;
+
+    const sessionsJson = JSON.stringify(sessions);
+    if (sessionsJson === lastCloudSessionsJson.current) return;
+
+    const saveCloudHistory = async () => {
+      try {
+        await setDoc(
+          doc(db, "users", user.uid, "workoutData", "history"),
+          {
+            sessions,
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        );
+        lastCloudSessionsJson.current = sessionsJson;
+        setSyncStatus("Cloud history saved.");
+        setSyncError("");
+      } catch (err) {
+        console.error("Failed to save cloud history", err);
+        setSyncError("Could not save to cloud. Your device copy is still saved.");
+      }
+    };
+
+    saveCloudHistory();
+  }, [sessions, user, cloudReady]);
 
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -193,6 +309,22 @@ export default function App() {
     setDraftExercises((prev) => prev.filter((item) => item.id !== id));
   }
 
+  function updateDraftExercise(id, field, value) {
+    setDraftExercises((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  }
+
+  function normalizeDraftExercise(item) {
+    return {
+      ...item,
+      exercise: item.exercise.trim() || "Exercise",
+      sets: Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(item.sets, 3))),
+      reps: Math.min(MAX_REPS, Math.max(MIN_REPS, safeNumber(item.reps, 10))),
+      weight: Math.max(0, safeNumber(item.weight, 0))
+    };
+  }
+
   function saveSession() {
     if (draftExercises.length === 0) return;
 
@@ -200,7 +332,7 @@ export default function App() {
       id: crypto.randomUUID(),
       sessionName: sessionName.trim() || "Gym Session",
       date: sessionDate,
-      exercises: draftExercises
+      exercises: draftExercises.map(normalizeDraftExercise)
     };
 
     setSessions((prev) => [newSession, ...prev]);
@@ -253,6 +385,32 @@ export default function App() {
     setSessionDate(new Date().toISOString().slice(0, 10));
   }
 
+  async function signInWithGoogle() {
+    if (!auth) return;
+
+    try {
+      setSyncError("");
+      setSyncStatus("Opening Google sign-in...");
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      console.error("Failed to sign in", err);
+      setSyncStatus("Signed out. Saving on this device only.");
+      setSyncError("Google sign-in did not finish. Try again when you are ready.");
+    }
+  }
+
+  async function signOutOfGoogle() {
+    if (!auth) return;
+
+    try {
+      await signOut(auth);
+      setCloudReady(false);
+    } catch (err) {
+      console.error("Failed to sign out", err);
+      setSyncError("Could not sign out. Please try again.");
+    }
+  }
+
   function exportData() {
     const blob = new Blob([JSON.stringify(sessions, null, 2)], {
       type: "application/json"
@@ -290,6 +448,37 @@ export default function App() {
         <p style={styles.subtitle}>
           Log full gym sessions and get recommendations that increase reps first, then weight, then sets.
         </p>
+
+        <div style={styles.section}>
+          <div style={styles.headerRow}>
+            <div>
+              <h2>Account</h2>
+              {user ? (
+                <p style={styles.statusText}>
+                  Signed in as {user.displayName || user.email}. {syncStatus}
+                </p>
+              ) : (
+                <p style={styles.statusText}>
+                  {firebaseConfigured
+                    ? "Sign in with Google to sync workout history between devices."
+                    : "Firebase is not configured yet. History is saved on this device only."}
+                </p>
+              )}
+              {syncError && <p style={styles.errorText}>{syncError}</p>}
+            </div>
+            {firebaseConfigured && (
+              user ? (
+                <button style={styles.secondaryButton} onClick={signOutOfGoogle}>
+                  Sign Out
+                </button>
+              ) : (
+                <button style={styles.button} onClick={signInWithGoogle} disabled={!authReady}>
+                  Sign In with Google
+                </button>
+              )
+            )}
+          </div>
+        </div>
 
         <div style={styles.section}>
           <h2>Log Session</h2>
@@ -400,8 +589,49 @@ export default function App() {
             ) : (
               draftExercises.map((item) => (
                 <div key={item.id} style={styles.listItem}>
-                  <div>
-                    <strong>{item.exercise}</strong>
+                  <div style={styles.draftDetails}>
+                    <label style={styles.label}>Exercise</label>
+                    <input
+                      style={styles.input}
+                      value={item.exercise}
+                      onChange={(e) => updateDraftExercise(item.id, "exercise", e.target.value)}
+                    />
+
+                    <div style={styles.compactGrid}>
+                      <div>
+                        <label style={styles.label}>Sets</label>
+                        <input
+                          style={styles.input}
+                          type="number"
+                          min="2"
+                          max="4"
+                          value={item.sets}
+                          onChange={(e) => updateDraftExercise(item.id, "sets", e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label style={styles.label}>Reps</label>
+                        <input
+                          style={styles.input}
+                          type="number"
+                          min="10"
+                          max="20"
+                          value={item.reps}
+                          onChange={(e) => updateDraftExercise(item.id, "reps", e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label style={styles.label}>Weight</label>
+                        <input
+                          style={styles.input}
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          value={item.weight}
+                          onChange={(e) => updateDraftExercise(item.id, "weight", e.target.value)}
+                        />
+                      </div>
+                    </div>
                     <div>
                       {item.sets} sets × {item.reps} reps @ {item.weight} lb
                     </div>
@@ -424,38 +654,45 @@ export default function App() {
         <div style={styles.section}>
           <div style={styles.headerRow}>
             <h2>Recommendations</h2>
-            <button
-              style={styles.button}
-              onClick={useAllRecommendations}
-              disabled={recommendations.length === 0}
-            >
-              Use All Recommendations
-            </button>
+            <div style={styles.buttonRow}>
+              <button style={styles.secondaryButton} onClick={() => setShowRecommendations((show) => !show)}>
+                {showRecommendations ? "Minimize" : "Show"}
+              </button>
+              <button
+                style={styles.button}
+                onClick={useAllRecommendations}
+                disabled={recommendations.length === 0}
+              >
+                Use All Recommendations
+              </button>
+            </div>
           </div>
 
-          {recommendations.length === 0 ? (
-            <p>Save your first session to see recommendations.</p>
-          ) : (
-            recommendations.map((item) => (
-              <div key={item.exercise} style={styles.card}>
-                <strong>{item.exercise}</strong>
-                <div style={{ marginTop: 8 }}>Last logged: {formatDate(item.date)}</div>
-                <div>From session: {item.sessionName}</div>
-                <div style={{ marginTop: 8 }}>
-                  Recommended: {item.recommendation.sets} sets × {item.recommendation.reps} reps @{" "}
-                  {item.recommendation.weight} lb
+          {showRecommendations && (
+            recommendations.length === 0 ? (
+              <p>Save your first session to see recommendations.</p>
+            ) : (
+              recommendations.map((item) => (
+                <div key={item.exercise} style={styles.card}>
+                  <strong>{item.exercise}</strong>
+                  <div style={{ marginTop: 8 }}>Last logged: {formatDate(item.date)}</div>
+                  <div>From session: {item.sessionName}</div>
+                  <div style={{ marginTop: 8 }}>
+                    Recommended: {item.recommendation.sets} sets × {item.recommendation.reps} reps @{" "}
+                    {item.recommendation.weight} lb
+                  </div>
+                  <div style={{ marginTop: 8, color: "#555" }}>
+                    Rule: increase reps first, then weight, then sets. Reps stay between 10 and 20.
+                    Sets stay between 2 and 4.
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <button style={styles.secondaryButton} onClick={() => addRecommendationToDraft(item)}>
+                      Use Recommendation
+                    </button>
+                  </div>
                 </div>
-                <div style={{ marginTop: 8, color: "#555" }}>
-                  Rule: increase reps first, then weight, then sets. Reps stay between 10 and 20.
-                  Sets stay between 2 and 4.
-                </div>
-                <div style={{ marginTop: 12 }}>
-                  <button style={styles.secondaryButton} onClick={() => addRecommendationToDraft(item)}>
-                    Use Recommendation
-                  </button>
-                </div>
-              </div>
-            ))
+              ))
+            )
           )}
         </div>
 
@@ -463,6 +700,9 @@ export default function App() {
           <div style={styles.headerRow}>
             <h2>History</h2>
             <div style={styles.buttonRow}>
+              <button style={styles.secondaryButton} onClick={() => setShowHistory((show) => !show)}>
+                {showHistory ? "Minimize" : "Show"}
+              </button>
               <button style={styles.secondaryButton} onClick={exportData}>
                 Export
               </button>
@@ -478,33 +718,35 @@ export default function App() {
             </div>
           </div>
 
-          {sortedSessions.length === 0 ? (
-            <p>No saved sessions yet.</p>
-          ) : (
-            sortedSessions.map((session) => (
-              <div key={session.id} style={styles.card}>
-                <div style={styles.headerRow}>
-                  <div>
-                    <strong>{session.sessionName}</strong>
-                    <div>{formatDate(session.date)}</div>
-                  </div>
-                  <button style={styles.deleteButton} onClick={() => deleteSession(session.id)}>
-                    Delete
-                  </button>
-                </div>
-
-                <div style={{ marginTop: 12 }}>
-                  {session.exercises.map((item) => (
-                    <div key={item.id} style={styles.smallCard}>
-                      <strong>{item.exercise}</strong>
-                      <div>
-                        {item.sets} sets × {item.reps} reps @ {item.weight} lb
-                      </div>
+          {showHistory && (
+            sortedSessions.length === 0 ? (
+              <p>No saved sessions yet.</p>
+            ) : (
+              sortedSessions.map((session) => (
+                <div key={session.id} style={styles.card}>
+                  <div style={styles.headerRow}>
+                    <div>
+                      <strong>{session.sessionName}</strong>
+                      <div>{formatDate(session.date)}</div>
                     </div>
-                  ))}
+                    <button style={styles.deleteButton} onClick={() => deleteSession(session.id)}>
+                      Delete
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    {session.exercises.map((item) => (
+                      <div key={item.id} style={styles.smallCard}>
+                        <strong>{item.exercise}</strong>
+                        <div>
+                          {item.sets} sets × {item.reps} reps @ {item.weight} lb
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))
+              ))
+            )
           )}
         </div>
       </div>
@@ -529,6 +771,16 @@ const styles = {
   subtitle: {
     color: "#555",
     marginBottom: 24
+  },
+  statusText: {
+    color: "#555",
+    marginTop: 6,
+    marginBottom: 0
+  },
+  errorText: {
+    color: "#b91c1c",
+    marginTop: 8,
+    marginBottom: 0
   },
   section: {
     background: "#fff",
@@ -615,6 +867,16 @@ const styles = {
     padding: 12,
     background: "#fff",
     marginBottom: 10
+  },
+  draftDetails: {
+    flex: "1 1 520px"
+  },
+  compactGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+    gap: 12,
+    marginTop: 12,
+    marginBottom: 8
   },
   headerRow: {
     display: "flex",
