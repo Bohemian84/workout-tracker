@@ -1,5 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  onAuthStateChanged,
+  setPersistence,
+  signInWithPopup,
+  signOut
+} from "firebase/auth";
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 
@@ -155,6 +161,11 @@ export default function App() {
 
   useEffect(() => {
     if (!auth) return undefined;
+
+    setPersistence(auth, browserLocalPersistence).catch((err) => {
+      console.error("Failed to set auth persistence", err);
+      setSyncError("This browser may not keep you signed in between visits.");
+    });
 
     return onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -391,6 +402,7 @@ export default function App() {
     try {
       setSyncError("");
       setSyncStatus("Opening Google sign-in...");
+      await setPersistence(auth, browserLocalPersistence);
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
       console.error("Failed to sign in", err);
