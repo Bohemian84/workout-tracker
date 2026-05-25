@@ -10,6 +10,7 @@ import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 
 const STORAGE_KEY = "workout-tracker-v1";
+const HIDDEN_RECOMMENDATIONS_KEY = "workout-tracker-hidden-recommendations-v1";
 
 const EXERCISES = [
   { name: "Bench Press", increment: 2.5 },
@@ -69,6 +70,16 @@ function loadLocalSessions() {
   } catch (err) {
     console.error("Failed to load saved data", err);
     return [];
+  }
+}
+
+function loadHiddenRecommendations() {
+  try {
+    const saved = localStorage.getItem(HIDDEN_RECOMMENDATIONS_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch (err) {
+    console.error("Failed to load hidden recommendations", err);
+    return {};
   }
 }
 
@@ -138,6 +149,7 @@ export default function App() {
   const [weight, setWeight] = useState("135");
 
   const [draftExercises, setDraftExercises] = useState([]);
+  const [hiddenRecommendations, setHiddenRecommendations] = useState({});
   const [showRecommendations, setShowRecommendations] = useState(true);
   const [showHistory, setShowHistory] = useState(true);
   const [user, setUser] = useState(null);
@@ -145,10 +157,11 @@ export default function App() {
   const [cloudReady, setCloudReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState(firebaseConfigured ? "Checking sign-in..." : "Local-only mode");
   const [syncError, setSyncError] = useState("");
-  const lastCloudSessionsJson = useRef("");
+  const lastCloudDataJson = useRef("");
 
   useEffect(() => {
     setSessions(loadLocalSessions());
+    setHiddenRecommendations(loadHiddenRecommendations());
   }, []);
 
   useEffect(() => {
@@ -158,6 +171,14 @@ export default function App() {
       console.error("Failed to save data", err);
     }
   }, [sessions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDDEN_RECOMMENDATIONS_KEY, JSON.stringify(hiddenRecommendations));
+    } catch (err) {
+      console.error("Failed to save hidden recommendations", err);
+    }
+  }, [hiddenRecommendations]);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -185,28 +206,48 @@ export default function App() {
       historyRef,
       async (snapshot) => {
         const remoteSessions = Array.isArray(snapshot.data()?.sessions) ? snapshot.data().sessions : [];
+        const remoteHiddenRecommendations =
+          snapshot.data()?.hiddenRecommendations && typeof snapshot.data().hiddenRecommendations === "object"
+            ? snapshot.data().hiddenRecommendations
+            : {};
         const localSessions = loadLocalSessions();
+        const localHiddenRecommendations = loadHiddenRecommendations();
         const migrationKey = getMigrationKey(user.uid);
         const alreadyMigrated = localStorage.getItem(migrationKey) === "true";
         const mergedSessions = alreadyMigrated ? remoteSessions : mergeSessions(remoteSessions, localSessions);
+        const mergedHiddenRecommendations = alreadyMigrated
+          ? remoteHiddenRecommendations
+          : { ...remoteHiddenRecommendations, ...localHiddenRecommendations };
         const hasLocalSessionsToUpload = !alreadyMigrated && mergedSessions.length > remoteSessions.length;
+        const hasHiddenRecommendationsToUpload =
+          !alreadyMigrated &&
+          JSON.stringify(mergedHiddenRecommendations) !== JSON.stringify(remoteHiddenRecommendations);
+        const hasLocalDataToUpload = hasLocalSessionsToUpload || hasHiddenRecommendationsToUpload;
 
-        lastCloudSessionsJson.current = JSON.stringify(mergedSessions);
+        lastCloudDataJson.current = JSON.stringify({
+          sessions: mergedSessions,
+          hiddenRecommendations: mergedHiddenRecommendations
+        });
         setSessions(mergedSessions);
+        setHiddenRecommendations(mergedHiddenRecommendations);
         setCloudReady(true);
-        setSyncStatus(hasLocalSessionsToUpload ? "Uploading local history..." : "Cloud history loaded.");
+        setSyncStatus(hasLocalDataToUpload ? "Uploading local history..." : "Cloud history loaded.");
 
-        if (hasLocalSessionsToUpload) {
+        if (hasLocalDataToUpload) {
           try {
             await setDoc(
               historyRef,
               {
                 sessions: mergedSessions,
+                hiddenRecommendations: mergedHiddenRecommendations,
                 updatedAt: serverTimestamp()
               },
               { merge: true }
             );
-            lastCloudSessionsJson.current = JSON.stringify(mergedSessions);
+            lastCloudDataJson.current = JSON.stringify({
+              sessions: mergedSessions,
+              hiddenRecommendations: mergedHiddenRecommendations
+            });
             localStorage.setItem(migrationKey, "true");
             setSyncStatus("Local history added to your account.");
           } catch (err) {
@@ -228,8 +269,8 @@ export default function App() {
   useEffect(() => {
     if (!user || !db || !cloudReady) return;
 
-    const sessionsJson = JSON.stringify(sessions);
-    if (sessionsJson === lastCloudSessionsJson.current) return;
+    const cloudDataJson = JSON.stringify({ sessions, hiddenRecommendations });
+    if (cloudDataJson === lastCloudDataJson.current) return;
 
     const saveCloudHistory = async () => {
       try {
@@ -237,11 +278,12 @@ export default function App() {
           doc(db, "users", user.uid, "workoutData", "history"),
           {
             sessions,
+            hiddenRecommendations,
             updatedAt: serverTimestamp()
           },
           { merge: true }
         );
-        lastCloudSessionsJson.current = sessionsJson;
+        lastCloudDataJson.current = cloudDataJson;
         setSyncStatus("Cloud history saved.");
         setSyncError("");
       } catch (err) {
@@ -251,7 +293,7 @@ export default function App() {
     };
 
     saveCloudHistory();
-  }, [sessions, user, cloudReady]);
+  }, [sessions, hiddenRecommendations, user, cloudReady]);
 
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -266,7 +308,8 @@ export default function App() {
           map[item.exercise] = {
             ...item,
             date: session.date,
-            sessionName: session.sessionName
+            sessionName: session.sessionName,
+            sessionId: session.id
           };
         }
       }
@@ -281,10 +324,18 @@ export default function App() {
         exercise: entry.exercise,
         date: entry.date,
         sessionName: entry.sessionName,
+        sessionId: entry.sessionId,
         recommendation: buildRecommendation(entry)
       }))
+      .filter((item) => hiddenRecommendations[item.exercise] !== item.sessionId)
       .sort((a, b) => a.exercise.localeCompare(b.exercise));
-  }, [latestByExercise]);
+  }, [hiddenRecommendations, latestByExercise]);
+
+  const hiddenRecommendationCount = useMemo(() => {
+    return Object.values(latestByExercise).filter(
+      (entry) => hiddenRecommendations[entry.exercise] === entry.sessionId
+    ).length;
+  }, [hiddenRecommendations, latestByExercise]);
 
   function resetExerciseForm() {
     setExercise("Bench Press");
@@ -355,6 +406,17 @@ export default function App() {
 
   function deleteSession(id) {
     setSessions((prev) => prev.filter((session) => session.id !== id));
+  }
+
+  function hideRecommendation(item) {
+    setHiddenRecommendations((prev) => ({
+      ...prev,
+      [item.exercise]: item.sessionId
+    }));
+  }
+
+  function restoreHiddenRecommendations() {
+    setHiddenRecommendations({});
   }
 
   function addRecommendationToDraft(item) {
@@ -670,6 +732,11 @@ export default function App() {
               <button style={styles.secondaryButton} onClick={() => setShowRecommendations((show) => !show)}>
                 {showRecommendations ? "Minimize" : "Show"}
               </button>
+              {hiddenRecommendationCount > 0 && (
+                <button style={styles.secondaryButton} onClick={restoreHiddenRecommendations}>
+                  Restore Deleted Suggestions
+                </button>
+              )}
               <button
                 style={styles.button}
                 onClick={useAllRecommendations}
@@ -682,7 +749,11 @@ export default function App() {
 
           {showRecommendations && (
             recommendations.length === 0 ? (
-              <p>Save your first session to see recommendations.</p>
+              <p>
+                {hiddenRecommendationCount > 0
+                  ? "No active suggestions. Restore deleted suggestions to see hidden ones again."
+                  : "Save your first session to see recommendations."}
+              </p>
             ) : (
               recommendations.map((item) => (
                 <div key={item.exercise} style={styles.card}>
@@ -697,9 +768,12 @@ export default function App() {
                     Rule: increase reps first, then weight, then sets. Reps stay between 10 and 20.
                     Sets stay between 2 and 4.
                   </div>
-                  <div style={{ marginTop: 12 }}>
+                  <div style={styles.buttonRow}>
                     <button style={styles.secondaryButton} onClick={() => addRecommendationToDraft(item)}>
                       Use Recommendation
+                    </button>
+                    <button style={styles.deleteButton} onClick={() => hideRecommendation(item)}>
+                      Delete Suggestion
                     </button>
                   </div>
                 </div>
