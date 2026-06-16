@@ -63,6 +63,10 @@ function getWeekDifference(fromDate, toDate) {
   return Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24 * 7)));
 }
 
+function getSessionTime(session) {
+  return new Date(session.createdAt || session.date).getTime();
+}
+
 function loadLocalSessions() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -296,7 +300,10 @@ export default function App() {
   }, [sessions, hiddenRecommendations, user, cloudReady]);
 
   const sortedSessions = useMemo(() => {
-    return [...sessions].sort((a, b) => new Date(b.date) - new Date(a.date));
+    return [...sessions].sort((a, b) => {
+      const dateDiff = new Date(b.date) - new Date(a.date);
+      return dateDiff || getSessionTime(b) - getSessionTime(a);
+    });
   }, [sessions]);
 
   const latestByExercise = useMemo(() => {
@@ -349,8 +356,8 @@ export default function App() {
     const finalExercise = exercise === "Custom Exercise" ? customExercise.trim() : exercise;
     if (!finalExercise) return;
 
-    const parsedSets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(sets, 3)));
-    const parsedReps = Math.min(MAX_REPS, Math.max(MIN_REPS, safeNumber(reps, 10)));
+    const parsedSets = Math.max(MIN_SETS, safeNumber(sets, 3));
+    const parsedReps = Math.max(1, safeNumber(reps, 10));
     const parsedWeight = Math.max(0, safeNumber(weight, 0));
 
     setDraftExercises((prev) => [
@@ -381,8 +388,8 @@ export default function App() {
     return {
       ...item,
       exercise: item.exercise.trim() || "Exercise",
-      sets: Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(item.sets, 3))),
-      reps: Math.min(MAX_REPS, Math.max(MIN_REPS, safeNumber(item.reps, 10))),
+      sets: Math.max(MIN_SETS, safeNumber(item.sets, 3)),
+      reps: Math.max(1, safeNumber(item.reps, 10)),
       weight: Math.max(0, safeNumber(item.weight, 0))
     };
   }
@@ -394,6 +401,7 @@ export default function App() {
       id: crypto.randomUUID(),
       sessionName: sessionName.trim() || "Gym Session",
       date: sessionDate,
+      createdAt: new Date().toISOString(),
       exercises: draftExercises.map(normalizeDraftExercise)
     };
 
@@ -609,24 +617,22 @@ export default function App() {
               )}
 
               <div>
-                <label style={styles.label}>Sets (2-4)</label>
+                <label style={styles.label}>Sets</label>
                 <input
                   style={styles.input}
                   type="number"
                   min="2"
-                  max="4"
                   value={sets}
                   onChange={(e) => setSets(e.target.value)}
                 />
               </div>
 
               <div>
-                <label style={styles.label}>Reps (10-20)</label>
+                <label style={styles.label}>Reps</label>
                 <input
                   style={styles.input}
                   type="number"
-                  min="10"
-                  max="20"
+                  min="1"
                   value={reps}
                   onChange={(e) => setReps(e.target.value)}
                 />
@@ -678,7 +684,6 @@ export default function App() {
                           style={styles.input}
                           type="number"
                           min="2"
-                          max="4"
                           value={item.sets}
                           onChange={(e) => updateDraftExercise(item.id, "sets", e.target.value)}
                         />
@@ -688,8 +693,7 @@ export default function App() {
                         <input
                           style={styles.input}
                           type="number"
-                          min="10"
-                          max="20"
+                          min="1"
                           value={item.reps}
                           onChange={(e) => updateDraftExercise(item.id, "reps", e.target.value)}
                         />
