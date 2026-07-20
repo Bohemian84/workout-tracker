@@ -37,8 +37,21 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function parseLocalDate(dateString) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateString);
+  if (!match) return new Date(dateString);
+
+  const [, year, month, day] = match;
+  return new Date(Number(year), Number(month) - 1, Number(day));
+}
+
+function getLocalDateValue(date = new Date()) {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
 function formatDate(dateString) {
-  return new Date(dateString).toLocaleDateString(undefined, {
+  return parseLocalDate(dateString).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric"
@@ -59,12 +72,14 @@ function getVolume(entry) {
 }
 
 function getWeekDifference(fromDate, toDate) {
-  const diffMs = new Date(toDate).getTime() - new Date(fromDate).getTime();
+  const diffMs = new Date(toDate).getTime() - parseLocalDate(fromDate).getTime();
   return Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24 * 7)));
 }
 
 function getSessionTime(session) {
-  return new Date(session.createdAt || session.date).getTime();
+  return session.createdAt
+    ? new Date(session.createdAt).getTime()
+    : parseLocalDate(session.date).getTime();
 }
 
 function loadLocalSessions() {
@@ -144,7 +159,7 @@ function buildRecommendation(entry) {
 export default function App() {
   const [sessions, setSessions] = useState([]);
   const [sessionName, setSessionName] = useState("Gym Session");
-  const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10));
+  const [sessionDate, setSessionDate] = useState(getLocalDateValue());
 
   const [exercise, setExercise] = useState("Bench Press");
   const [customExercise, setCustomExercise] = useState("");
@@ -301,7 +316,7 @@ export default function App() {
 
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => {
-      const dateDiff = new Date(b.date) - new Date(a.date);
+      const dateDiff = parseLocalDate(b.date) - parseLocalDate(a.date);
       return dateDiff || getSessionTime(b) - getSessionTime(a);
     });
   }, [sessions]);
@@ -386,7 +401,7 @@ export default function App() {
 
   function normalizeDraftExercise(item) {
     return {
-      ...item,
+      id: item.id,
       exercise: item.exercise.trim() || "Exercise",
       sets: Math.max(MIN_SETS, safeNumber(item.sets, 3)),
       reps: Math.max(1, safeNumber(item.reps, 10)),
@@ -408,7 +423,7 @@ export default function App() {
     setSessions((prev) => [newSession, ...prev]);
     setDraftExercises([]);
     setSessionName("Gym Session");
-    setSessionDate(new Date().toISOString().slice(0, 10));
+    setSessionDate(getLocalDateValue());
     resetExerciseForm();
   }
 
@@ -439,7 +454,12 @@ export default function App() {
           exercise: item.exercise,
           sets: item.recommendation.sets,
           reps: item.recommendation.reps,
-          weight: item.recommendation.weight
+          weight: item.recommendation.weight,
+          suggested: {
+            sets: item.recommendation.sets,
+            reps: item.recommendation.reps,
+            weight: item.recommendation.weight
+          }
         }
       ];
     });
@@ -456,14 +476,19 @@ export default function App() {
           exercise: item.exercise,
           sets: item.recommendation.sets,
           reps: item.recommendation.reps,
-          weight: item.recommendation.weight
+          weight: item.recommendation.weight,
+          suggested: {
+            sets: item.recommendation.sets,
+            reps: item.recommendation.reps,
+            weight: item.recommendation.weight
+          }
         }));
 
       return [...prev, ...additions];
     });
 
     setSessionName("Recommended Session");
-    setSessionDate(new Date().toISOString().slice(0, 10));
+    setSessionDate(getLocalDateValue());
   }
 
   async function signInWithGoogle() {
@@ -677,9 +702,16 @@ export default function App() {
                       onChange={(e) => updateDraftExercise(item.id, "exercise", e.target.value)}
                     />
 
+                    {item.suggested && (
+                      <div style={styles.suggestionReference}>
+                        Suggested: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
+                        {item.suggested.weight} lb
+                      </div>
+                    )}
+
                     <div style={styles.compactGrid}>
                       <div>
-                        <label style={styles.label}>Sets</label>
+                        <label style={styles.label}>Actual Sets</label>
                         <input
                           style={styles.input}
                           type="number"
@@ -689,7 +721,7 @@ export default function App() {
                         />
                       </div>
                       <div>
-                        <label style={styles.label}>Reps</label>
+                        <label style={styles.label}>Actual Reps</label>
                         <input
                           style={styles.input}
                           type="number"
@@ -699,7 +731,7 @@ export default function App() {
                         />
                       </div>
                       <div>
-                        <label style={styles.label}>Weight</label>
+                        <label style={styles.label}>Actual Weight</label>
                         <input
                           style={styles.input}
                           type="number"
@@ -710,8 +742,8 @@ export default function App() {
                         />
                       </div>
                     </div>
-                    <div>
-                      {item.sets} sets × {item.reps} reps @ {item.weight} lb
+                    <div style={styles.actualSummary}>
+                      Will save: {item.sets} sets × {item.reps} reps @ {item.weight} lb
                     </div>
                   </div>
                   <button style={styles.deleteButton} onClick={() => removeDraftExercise(item.id)}>
@@ -960,6 +992,13 @@ const styles = {
   },
   draftDetails: {
     flex: "1 1 520px"
+  },
+  suggestionReference: {
+    color: "#555",
+    marginTop: 10
+  },
+  actualSummary: {
+    fontWeight: 600
   },
   compactGrid: {
     display: "grid",
