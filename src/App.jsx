@@ -31,6 +31,7 @@ const MIN_REPS = 10;
 const MAX_REPS = 20;
 const MIN_SETS = 2;
 const MAX_SETS = 4;
+const MIN_LOGGED_SETS = 1;
 
 function safeNumber(value, fallback = 0) {
   const n = Number(value);
@@ -371,7 +372,7 @@ export default function App() {
     const finalExercise = exercise === "Custom Exercise" ? customExercise.trim() : exercise;
     if (!finalExercise) return;
 
-    const parsedSets = Math.max(MIN_SETS, safeNumber(sets, 3));
+    const parsedSets = Math.max(MIN_LOGGED_SETS, safeNumber(sets, 3));
     const parsedReps = Math.max(1, safeNumber(reps, 10));
     const parsedWeight = Math.max(0, safeNumber(weight, 0));
 
@@ -403,7 +404,7 @@ export default function App() {
     return {
       id: item.id,
       exercise: item.exercise.trim() || "Exercise",
-      sets: Math.max(MIN_SETS, safeNumber(item.sets, 3)),
+      sets: Math.max(MIN_LOGGED_SETS, safeNumber(item.sets, 3)),
       reps: Math.max(1, safeNumber(item.reps, 10)),
       weight: Math.max(0, safeNumber(item.weight, 0))
     };
@@ -646,7 +647,7 @@ export default function App() {
                 <input
                   style={styles.input}
                   type="number"
-                  min="2"
+                  min="1"
                   value={sets}
                   onChange={(e) => setSets(e.target.value)}
                 />
@@ -715,7 +716,7 @@ export default function App() {
                         <input
                           style={styles.input}
                           type="number"
-                          min="2"
+                          min="1"
                           value={item.sets}
                           onChange={(e) => updateDraftExercise(item.id, "sets", e.target.value)}
                         />
