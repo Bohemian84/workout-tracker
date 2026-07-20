@@ -178,6 +178,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState(firebaseConfigured ? "Checking sign-in..." : "Local-only mode");
   const [syncError, setSyncError] = useState("");
   const lastCloudDataJson = useRef("");
+  const recommendationsSectionRef = useRef(null);
 
   useEffect(() => {
     setSessions(loadLocalSessions());
@@ -443,53 +444,71 @@ export default function App() {
     setHiddenRecommendations({});
   }
 
-  function addRecommendationToDraft(item) {
-    setDraftExercises((prev) => {
-      const alreadyExists = prev.some((exercise) => exercise.exercise === item.exercise);
-      if (alreadyExists) return prev;
+  function preserveRecommendationsPosition(update) {
+    const previousTop = recommendationsSectionRef.current?.getBoundingClientRect().top;
+    update();
 
-      return [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          exercise: item.exercise,
-          sets: item.recommendation.sets,
-          reps: item.recommendation.reps,
-          weight: item.recommendation.weight,
-          suggested: {
+    if (previousTop === undefined) return;
+
+    requestAnimationFrame(() => {
+      const currentTop = recommendationsSectionRef.current?.getBoundingClientRect().top;
+      if (currentTop !== undefined) {
+        window.scrollBy(0, currentTop - previousTop);
+      }
+    });
+  }
+
+  function addRecommendationToDraft(item) {
+    preserveRecommendationsPosition(() => {
+      setDraftExercises((prev) => {
+        const alreadyExists = prev.some((exercise) => exercise.exercise === item.exercise);
+        if (alreadyExists) return prev;
+
+        return [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            exercise: item.exercise,
             sets: item.recommendation.sets,
             reps: item.recommendation.reps,
-            weight: item.recommendation.weight
+            weight: item.recommendation.weight,
+            suggested: {
+              sets: item.recommendation.sets,
+              reps: item.recommendation.reps,
+              weight: item.recommendation.weight
+            }
           }
-        }
-      ];
+        ];
+      });
     });
   }
 
   function useAllRecommendations() {
-    setDraftExercises((prev) => {
-      const existingNames = new Set(prev.map((x) => x.exercise));
+    preserveRecommendationsPosition(() => {
+      setDraftExercises((prev) => {
+        const existingNames = new Set(prev.map((x) => x.exercise));
 
-      const additions = recommendations
-        .filter((item) => !existingNames.has(item.exercise))
-        .map((item) => ({
-          id: crypto.randomUUID(),
-          exercise: item.exercise,
-          sets: item.recommendation.sets,
-          reps: item.recommendation.reps,
-          weight: item.recommendation.weight,
-          suggested: {
+        const additions = recommendations
+          .filter((item) => !existingNames.has(item.exercise))
+          .map((item) => ({
+            id: crypto.randomUUID(),
+            exercise: item.exercise,
             sets: item.recommendation.sets,
             reps: item.recommendation.reps,
-            weight: item.recommendation.weight
-          }
-        }));
+            weight: item.recommendation.weight,
+            suggested: {
+              sets: item.recommendation.sets,
+              reps: item.recommendation.reps,
+              weight: item.recommendation.weight
+            }
+          }));
 
-      return [...prev, ...additions];
+        return [...prev, ...additions];
+      });
+
+      setSessionName("Recommended Session");
+      setSessionDate(getLocalDateValue());
     });
-
-    setSessionName("Recommended Session");
-    setSessionDate(getLocalDateValue());
   }
 
   async function signInWithGoogle() {
@@ -762,7 +781,7 @@ export default function App() {
           </div>
         </div>
 
-        <div style={styles.section}>
+        <div ref={recommendationsSectionRef} style={styles.section}>
           <div style={styles.headerRow}>
             <h2>Recommendations</h2>
             <div style={styles.buttonRow}>
