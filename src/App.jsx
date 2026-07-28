@@ -11,6 +11,7 @@ import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 
 const STORAGE_KEY = "workout-tracker-v1";
 const HIDDEN_RECOMMENDATIONS_KEY = "workout-tracker-hidden-recommendations-v1";
+const DRAFT_SESSION_KEY = "workout-tracker-draft-session-v1";
 
 const EXERCISES = [
   { name: "Bench Press", increment: 2.5 },
@@ -103,6 +104,20 @@ function loadHiddenRecommendations() {
   }
 }
 
+function loadDraftSession() {
+  try {
+    const saved = localStorage.getItem(DRAFT_SESSION_KEY);
+    if (!saved) return null;
+
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed?.exercises)) return null;
+    return parsed;
+  } catch (err) {
+    console.error("Failed to load current workout", err);
+    return null;
+  }
+}
+
 function mergeSessions(primarySessions, secondarySessions) {
   const seen = new Set();
   return [...primarySessions, ...secondarySessions].filter((session) => {
@@ -158,9 +173,10 @@ function buildRecommendation(entry) {
 }
 
 export default function App() {
+  const [initialDraft] = useState(loadDraftSession);
   const [sessions, setSessions] = useState([]);
-  const [sessionName, setSessionName] = useState("Gym Session");
-  const [sessionDate, setSessionDate] = useState(getLocalDateValue());
+  const [sessionName, setSessionName] = useState(initialDraft?.sessionName || "Gym Session");
+  const [sessionDate, setSessionDate] = useState(initialDraft?.date || getLocalDateValue());
 
   const [exercise, setExercise] = useState("Bench Press");
   const [customExercise, setCustomExercise] = useState("");
@@ -168,7 +184,8 @@ export default function App() {
   const [reps, setReps] = useState("10");
   const [weight, setWeight] = useState("135");
 
-  const [draftExercises, setDraftExercises] = useState([]);
+  const [draftExercises, setDraftExercises] = useState(initialDraft?.exercises || []);
+  const [draftSaveError, setDraftSaveError] = useState("");
   const [hiddenRecommendations, setHiddenRecommendations] = useState({});
   const [showRecommendations, setShowRecommendations] = useState(true);
   const [showHistory, setShowHistory] = useState(true);
@@ -200,6 +217,30 @@ export default function App() {
       console.error("Failed to save hidden recommendations", err);
     }
   }, [hiddenRecommendations]);
+
+  useEffect(() => {
+    try {
+      if (draftExercises.length === 0) {
+        localStorage.removeItem(DRAFT_SESSION_KEY);
+        setDraftSaveError("");
+        return;
+      }
+
+      localStorage.setItem(
+        DRAFT_SESSION_KEY,
+        JSON.stringify({
+          sessionName,
+          date: sessionDate,
+          exercises: draftExercises,
+          updatedAt: new Date().toISOString()
+        })
+      );
+      setDraftSaveError("");
+    } catch (err) {
+      console.error("Failed to save current workout", err);
+      setDraftSaveError("This current workout could not be saved on this device.");
+    }
+  }, [sessionName, sessionDate, draftExercises]);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -360,6 +401,16 @@ export default function App() {
       (entry) => hiddenRecommendations[entry.exercise] === entry.sessionId
     ).length;
   }, [hiddenRecommendations, latestByExercise]);
+
+  const draftExerciseNames = useMemo(
+    () => new Set(draftExercises.map((item) => item.exercise)),
+    [draftExercises]
+  );
+
+  const remainingRecommendationCount = useMemo(
+    () => recommendations.filter((item) => !draftExerciseNames.has(item.exercise)).length,
+    [draftExerciseNames, recommendations]
+  );
 
   function resetExerciseForm() {
     setExercise("Bench Press");
@@ -709,6 +760,15 @@ export default function App() {
           <div style={styles.card}>
             <h3>Current Session</h3>
 
+            {draftExercises.length > 0 && (
+              <p
+                aria-live="polite"
+                style={draftSaveError ? styles.errorText : styles.draftStatus}
+              >
+                {draftSaveError || "Current workout saved on this device"}
+              </p>
+            )}
+
             {draftExercises.length === 0 ? (
               <p>No exercises added yet.</p>
             ) : (
@@ -796,9 +856,13 @@ export default function App() {
               <button
                 style={styles.button}
                 onClick={useAllRecommendations}
-                disabled={recommendations.length === 0}
+                disabled={remainingRecommendationCount === 0}
               >
-                Use All Recommendations
+                {recommendations.length === 0
+                  ? "No Recommendations"
+                  : remainingRecommendationCount === 0
+                  ? "All Recommendations Added"
+                  : `Use All Recommendations (${remainingRecommendationCount})`}
               </button>
             </div>
           </div>
@@ -825,8 +889,18 @@ export default function App() {
                     Sets stay between 2 and 4.
                   </div>
                   <div style={styles.buttonRow}>
-                    <button style={styles.secondaryButton} onClick={() => addRecommendationToDraft(item)}>
-                      Use Recommendation
+                    <button
+                      style={
+                        draftExerciseNames.has(item.exercise)
+                          ? styles.addedButton
+                          : styles.secondaryButton
+                      }
+                      onClick={() => addRecommendationToDraft(item)}
+                      disabled={draftExerciseNames.has(item.exercise)}
+                    >
+                      {draftExerciseNames.has(item.exercise)
+                        ? "Added to Current Workout"
+                        : "Use Recommendation"}
                     </button>
                     <button style={styles.deleteButton} onClick={() => hideRecommendation(item)}>
                       Delete Suggestion
@@ -924,6 +998,12 @@ const styles = {
     marginTop: 8,
     marginBottom: 0
   },
+  draftStatus: {
+    color: "#166534",
+    marginTop: 6,
+    marginBottom: 14,
+    fontWeight: 600
+  },
   section: {
     background: "#fff",
     borderRadius: 12,
@@ -982,6 +1062,14 @@ const styles = {
     border: "1px solid #ccc",
     background: "#fff",
     cursor: "pointer"
+  },
+  addedButton: {
+    padding: "10px 14px",
+    borderRadius: 8,
+    border: "1px solid #86b893",
+    background: "#eef8f0",
+    color: "#166534",
+    cursor: "default"
   },
   deleteButton: {
     padding: "8px 12px",
