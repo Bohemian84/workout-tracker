@@ -69,15 +69,6 @@ function getExerciseMeta(name) {
   return EXERCISES.find((e) => e.name === name) || { increment: 5 };
 }
 
-function getVolume(entry) {
-  return entry.sets * entry.reps * entry.weight;
-}
-
-function getWeekDifference(fromDate, toDate) {
-  const diffMs = new Date(toDate).getTime() - parseLocalDate(fromDate).getTime();
-  return Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24 * 7)));
-}
-
 function getSessionTime(session) {
   return session.createdAt
     ? new Date(session.createdAt).getTime()
@@ -132,43 +123,23 @@ function getMigrationKey(uid) {
 }
 
 function buildRecommendation(entry) {
-  let sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
-  let reps = Math.min(MAX_REPS, Math.max(MIN_REPS, safeNumber(entry.reps, 10)));
-  let weight = safeNumber(entry.weight, 0);
-
+  const sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
+  const completedReps = Math.max(1, safeNumber(entry.reps, MIN_REPS));
+  const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
   const increment = getExerciseMeta(entry.exercise).increment;
-  const targetVolume = getVolume(entry) * Math.pow(1.05, getWeekDifference(entry.date, new Date()));
 
-  while (sets * reps * weight < targetVolume) {
-    if (reps < MAX_REPS) {
-      reps += 1;
-      continue;
-    }
-
-    if (weight > 0) {
-      weight = roundToIncrement(weight + increment, increment);
-      reps = MIN_REPS;
-
-      if (sets * reps * weight >= targetVolume) {
-        break;
-      }
-
-      continue;
-    }
-
-    if (sets < MAX_SETS) {
-      sets += 1;
-      continue;
-    }
-
-    break;
+  if (completedReps >= MAX_REPS) {
+    return {
+      sets,
+      reps: MIN_REPS,
+      weight: roundToIncrement(completedWeight + increment, increment)
+    };
   }
 
   return {
     sets,
-    reps,
-    weight,
-    targetVolume: Math.round(targetVolume)
+    reps: Math.min(MAX_REPS, Math.max(MIN_REPS, completedReps + 1)),
+    weight: completedWeight
   };
 }
 
@@ -624,7 +595,7 @@ export default function App() {
       <div style={styles.container}>
         <h1 style={styles.title}>Workout Tracker</h1>
         <p style={styles.subtitle}>
-          Log full gym sessions and get recommendations that increase reps first, then weight, then sets.
+          Build from 10 to 20 reps, then add weight and return to 10 reps.
         </p>
 
         <div style={styles.section}>
@@ -885,8 +856,8 @@ export default function App() {
                     {item.recommendation.weight} lb
                   </div>
                   <div style={{ marginTop: 8, color: "#555" }}>
-                    Rule: increase reps first, then weight, then sets. Reps stay between 10 and 20.
-                    Sets stay between 2 and 4.
+                    Rule: add one rep at a time up to 20. After 20, add weight and reset to 10 reps.
+                    Recommended sets stay between 2 and 4.
                   </div>
                   <div style={styles.buttonRow}>
                     <button
