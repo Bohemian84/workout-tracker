@@ -60,11 +60,6 @@ function formatDate(dateString) {
   });
 }
 
-function roundToIncrement(value, increment) {
-  if (!increment || increment <= 0) return value;
-  return Math.round(value / increment) * increment;
-}
-
 function getExerciseMeta(name) {
   return EXERCISES.find((e) => e.name === name) || { increment: 5 };
 }
@@ -122,24 +117,53 @@ function getMigrationKey(uid) {
   return `${STORAGE_KEY}-cloud-migrated-${uid}`;
 }
 
+function simpleProgression(
+  weight,
+  completedReps,
+  weightIncrement,
+  minimumReps = MIN_REPS,
+  maximumReps = MAX_REPS
+) {
+  if (completedReps >= maximumReps) {
+    const newWeight = weight + weightIncrement;
+
+    if (weight <= 0) {
+      return {
+        weight: newWeight,
+        targetReps: minimumReps
+      };
+    }
+
+    const percentageIncrease = newWeight / weight;
+    const percentIncrease = (percentageIncrease - 1) * 100;
+    const estimatedRepDrop = Math.ceil(percentIncrease * 0.6 - 1e-9);
+
+    return {
+      weight: newWeight,
+      targetReps: Math.max(minimumReps, maximumReps - estimatedRepDrop)
+    };
+  }
+
+  return {
+    weight,
+    targetReps: Math.min(
+      maximumReps,
+      Math.max(minimumReps, completedReps + 1)
+    )
+  };
+}
+
 function buildRecommendation(entry) {
   const sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
   const completedReps = Math.max(1, safeNumber(entry.reps, MIN_REPS));
   const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
   const increment = getExerciseMeta(entry.exercise).increment;
-
-  if (completedReps >= MAX_REPS) {
-    return {
-      sets,
-      reps: MIN_REPS,
-      weight: roundToIncrement(completedWeight + increment, increment)
-    };
-  }
+  const progression = simpleProgression(completedWeight, completedReps, increment);
 
   return {
     sets,
-    reps: Math.min(MAX_REPS, Math.max(MIN_REPS, completedReps + 1)),
-    weight: completedWeight
+    reps: progression.targetReps,
+    weight: progression.weight
   };
 }
 
@@ -595,7 +619,7 @@ export default function App() {
       <div style={styles.container}>
         <h1 style={styles.title}>Workout Tracker</h1>
         <p style={styles.subtitle}>
-          Build from 10 to 20 reps, then add weight and return to 10 reps.
+          Build to 20 reps, then add weight and adjust reps for the size of the weight increase.
         </p>
 
         <div style={styles.section}>
@@ -856,8 +880,8 @@ export default function App() {
                     {item.recommendation.weight} lb
                   </div>
                   <div style={{ marginTop: 8, color: "#555" }}>
-                    Rule: add one rep at a time up to 20. After 20, add weight and reset to 10 reps.
-                    Recommended sets stay between 2 and 4.
+                    Rule: add one rep at a time up to 20. After 20, add weight and reduce the rep
+                    target based on the percentage weight increase, with a minimum of 10 reps.
                   </div>
                   <div style={styles.buttonRow}>
                     <button
