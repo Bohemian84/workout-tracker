@@ -1,5 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  DndContext,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   browserLocalPersistence,
   onAuthStateChanged,
   setPersistence,
@@ -167,6 +184,107 @@ function buildRecommendation(entry) {
   };
 }
 
+function SortableDraftExercise({ item, onRemove, onUpdate }) {
+  const {
+    attributes,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: item.id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        ...styles.listItem,
+        transform: CSS.Transform.toString(transform),
+        transition,
+        boxShadow: isDragging ? "0 8px 24px rgba(0,0,0,0.16)" : "none",
+        opacity: isDragging ? 0.9 : 1,
+        position: "relative",
+        zIndex: isDragging ? 1 : "auto"
+      }}
+    >
+      <div style={styles.draftItemToolbar}>
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          style={styles.dragHandle}
+          title="Drag to reorder"
+          aria-label={`Drag ${item.exercise} to reorder`}
+          {...attributes}
+          {...listeners}
+        >
+          <span aria-hidden="true">⋮⋮</span>
+        </button>
+        <button
+          type="button"
+          style={styles.deleteButton}
+          onClick={() => onRemove(item.id)}
+        >
+          Remove
+        </button>
+      </div>
+
+      <div style={styles.draftDetails}>
+        <label style={styles.label}>Exercise</label>
+        <input
+          style={styles.input}
+          value={item.exercise}
+          onChange={(e) => onUpdate(item.id, "exercise", e.target.value)}
+        />
+
+        {item.suggested && (
+          <div style={styles.suggestionReference}>
+            Suggested: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
+            {item.suggested.weight} lb
+          </div>
+        )}
+
+        <div style={styles.compactGrid}>
+          <div>
+            <label style={styles.label}>Actual Sets</label>
+            <input
+              style={styles.input}
+              type="number"
+              min="1"
+              value={item.sets}
+              onChange={(e) => onUpdate(item.id, "sets", e.target.value)}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Actual Reps</label>
+            <input
+              style={styles.input}
+              type="number"
+              min="1"
+              value={item.reps}
+              onChange={(e) => onUpdate(item.id, "reps", e.target.value)}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Actual Weight</label>
+            <input
+              style={styles.input}
+              type="number"
+              step="0.5"
+              min="0"
+              value={item.weight}
+              onChange={(e) => onUpdate(item.id, "weight", e.target.value)}
+            />
+          </div>
+        </div>
+        <div style={styles.actualSummary}>
+          Will save: {item.sets} sets × {item.reps} reps @ {item.weight} lb
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [initialDraft] = useState(loadDraftSession);
   const [sessions, setSessions] = useState([]);
@@ -191,6 +309,22 @@ export default function App() {
   const [syncError, setSyncError] = useState("");
   const lastCloudDataJson = useRef("");
   const recommendationsSectionRef = useRef(null);
+  const dragSensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: {
+        distance: 6
+      }
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 150,
+        tolerance: 5
+      }
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates
+    })
+  );
 
   useEffect(() => {
     setSessions(loadLocalSessions());
@@ -445,6 +579,18 @@ export default function App() {
     setDraftExercises((prev) =>
       prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
     );
+  }
+
+  function reorderDraftExercises({ active, over }) {
+    if (!over || active.id === over.id) return;
+
+    setDraftExercises((currentExercises) => {
+      const oldIndex = currentExercises.findIndex((item) => item.id === active.id);
+      const newIndex = currentExercises.findIndex((item) => item.id === over.id);
+
+      if (oldIndex === -1 || newIndex === -1) return currentExercises;
+      return arrayMove(currentExercises, oldIndex, newIndex);
+    });
   }
 
   function normalizeDraftExercise(item) {
@@ -767,65 +913,25 @@ export default function App() {
             {draftExercises.length === 0 ? (
               <p>No exercises added yet.</p>
             ) : (
-              draftExercises.map((item) => (
-                <div key={item.id} style={styles.listItem}>
-                  <div style={styles.draftDetails}>
-                    <label style={styles.label}>Exercise</label>
-                    <input
-                      style={styles.input}
-                      value={item.exercise}
-                      onChange={(e) => updateDraftExercise(item.id, "exercise", e.target.value)}
+              <DndContext
+                sensors={dragSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={reorderDraftExercises}
+              >
+                <SortableContext
+                  items={draftExercises.map((item) => item.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {draftExercises.map((item) => (
+                    <SortableDraftExercise
+                      key={item.id}
+                      item={item}
+                      onRemove={removeDraftExercise}
+                      onUpdate={updateDraftExercise}
                     />
-
-                    {item.suggested && (
-                      <div style={styles.suggestionReference}>
-                        Suggested: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
-                        {item.suggested.weight} lb
-                      </div>
-                    )}
-
-                    <div style={styles.compactGrid}>
-                      <div>
-                        <label style={styles.label}>Actual Sets</label>
-                        <input
-                          style={styles.input}
-                          type="number"
-                          min="1"
-                          value={item.sets}
-                          onChange={(e) => updateDraftExercise(item.id, "sets", e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label style={styles.label}>Actual Reps</label>
-                        <input
-                          style={styles.input}
-                          type="number"
-                          min="1"
-                          value={item.reps}
-                          onChange={(e) => updateDraftExercise(item.id, "reps", e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label style={styles.label}>Actual Weight</label>
-                        <input
-                          style={styles.input}
-                          type="number"
-                          step="0.5"
-                          min="0"
-                          value={item.weight}
-                          onChange={(e) => updateDraftExercise(item.id, "weight", e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div style={styles.actualSummary}>
-                      Will save: {item.sets} sets × {item.reps} reps @ {item.weight} lb
-                    </div>
-                  </div>
-                  <button style={styles.deleteButton} onClick={() => removeDraftExercise(item.id)}>
-                    Remove
-                  </button>
-                </div>
-              ))
+                  ))}
+                </SortableContext>
+              </DndContext>
             )}
 
             <div style={styles.buttonRow}>
@@ -1083,18 +1189,37 @@ const styles = {
     display: "inline-block"
   },
   listItem: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "center",
     border: "1px solid #e3e3e3",
     borderRadius: 8,
     padding: 12,
     background: "#fff",
     marginBottom: 10
   },
+  draftItemToolbar: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 10
+  },
+  dragHandle: {
+    width: 44,
+    height: 44,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    border: "1px solid #bbb",
+    background: "#fff",
+    color: "#444",
+    cursor: "grab",
+    fontSize: 22,
+    lineHeight: 1,
+    touchAction: "none",
+    userSelect: "none"
+  },
   draftDetails: {
-    flex: "1 1 520px"
+    width: "100%"
   },
   suggestionReference: {
     color: "#555",
