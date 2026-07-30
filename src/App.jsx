@@ -184,7 +184,13 @@ function buildRecommendation(entry) {
   };
 }
 
-function SortableDraftExercise({ item, onRemove, onUpdate }) {
+function SortableDraftExercise({
+  item,
+  onComplete,
+  onEdit,
+  onRemove,
+  onUpdate
+}) {
   const {
     attributes,
     listeners,
@@ -200,6 +206,7 @@ function SortableDraftExercise({ item, onRemove, onUpdate }) {
       ref={setNodeRef}
       style={{
         ...styles.listItem,
+        ...(item.completed ? styles.completedListItem : {}),
         transform: CSS.Transform.toString(transform),
         transition,
         boxShadow: isDragging ? "0 8px 24px rgba(0,0,0,0.16)" : "none",
@@ -220,67 +227,99 @@ function SortableDraftExercise({ item, onRemove, onUpdate }) {
         >
           <span aria-hidden="true">⋮⋮</span>
         </button>
-        <button
-          type="button"
-          style={styles.deleteButton}
-          onClick={() => onRemove(item.id)}
-        >
-          Remove
-        </button>
-      </div>
-
-      <div style={styles.draftDetails}>
-        <label style={styles.label}>Exercise</label>
-        <input
-          style={styles.input}
-          value={item.exercise}
-          onChange={(e) => onUpdate(item.id, "exercise", e.target.value)}
-        />
-
-        {item.suggested && (
-          <div style={styles.suggestionReference}>
-            Suggested: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
-            {item.suggested.weight} lb
-          </div>
-        )}
-
-        <div style={styles.compactGrid}>
-          <div>
-            <label style={styles.label}>Actual Sets</label>
-            <input
-              style={styles.input}
-              type="number"
-              min="1"
-              value={item.sets}
-              onChange={(e) => onUpdate(item.id, "sets", e.target.value)}
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Actual Reps</label>
-            <input
-              style={styles.input}
-              type="number"
-              min="1"
-              value={item.reps}
-              onChange={(e) => onUpdate(item.id, "reps", e.target.value)}
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Actual Weight</label>
-            <input
-              style={styles.input}
-              type="number"
-              step="0.5"
-              min="0"
-              value={item.weight}
-              onChange={(e) => onUpdate(item.id, "weight", e.target.value)}
-            />
-          </div>
-        </div>
-        <div style={styles.actualSummary}>
-          Will save: {item.sets} sets × {item.reps} reps @ {item.weight} lb
+        <div style={styles.draftItemActions}>
+          {item.completed && (
+            <button
+              type="button"
+              style={styles.secondaryButton}
+              onClick={() => onEdit(item.id)}
+            >
+              Edit
+            </button>
+          )}
+          <button
+            type="button"
+            style={styles.deleteButton}
+            onClick={() => onRemove(item.id)}
+          >
+            Remove
+          </button>
         </div>
       </div>
+
+      {item.completed ? (
+        <div style={styles.completedExercise}>
+          <div style={styles.completedExerciseHeading}>
+            <strong style={styles.completedExerciseName}>{item.exercise}</strong>
+            <span style={styles.completedBadge}>Completed</span>
+          </div>
+          <div style={styles.completedExerciseSummary}>
+            {item.sets} sets × {item.reps} reps @ {item.weight} lb
+          </div>
+        </div>
+      ) : (
+        <div style={styles.draftDetails}>
+          <label style={styles.label}>Exercise</label>
+          <input
+            style={styles.input}
+            value={item.exercise}
+            onChange={(e) => onUpdate(item.id, "exercise", e.target.value)}
+          />
+
+          {item.suggested && (
+            <div style={styles.suggestionReference}>
+              Suggested: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
+              {item.suggested.weight} lb
+            </div>
+          )}
+
+          <div style={styles.compactGrid}>
+            <div>
+              <label style={styles.label}>Actual Sets</label>
+              <input
+                style={styles.input}
+                type="number"
+                min="1"
+                value={item.sets}
+                onChange={(e) => onUpdate(item.id, "sets", e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={styles.label}>Actual Reps</label>
+              <input
+                style={styles.input}
+                type="number"
+                min="1"
+                value={item.reps}
+                onChange={(e) => onUpdate(item.id, "reps", e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={styles.label}>Actual Weight</label>
+              <input
+                style={styles.input}
+                type="number"
+                step="0.5"
+                min="0"
+                value={item.weight}
+                onChange={(e) => onUpdate(item.id, "weight", e.target.value)}
+              />
+            </div>
+          </div>
+          <div style={styles.actualSummary}>
+            Will save: {item.sets} sets × {item.reps} reps @ {item.weight} lb
+          </div>
+          <div style={styles.buttonRow}>
+            <button
+              type="button"
+              style={styles.completeButton}
+              onClick={() => onComplete(item.id)}
+            >
+              Save Exercise
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -541,6 +580,14 @@ export default function App() {
     [draftExerciseNames, recommendations]
   );
 
+  const completedExerciseCount = useMemo(
+    () => draftExercises.filter((item) => item.completed).length,
+    [draftExercises]
+  );
+  const completionSummary = `${completedExerciseCount} of ${draftExercises.length} ${
+    draftExercises.length === 1 ? "exercise" : "exercises"
+  } completed`;
+
   function resetExerciseForm() {
     setExercise("Bench Press");
     setCustomExercise("");
@@ -601,6 +648,28 @@ export default function App() {
       reps: Math.max(1, safeNumber(item.reps, 10)),
       weight: Math.max(0, safeNumber(item.weight, 0))
     };
+  }
+
+  function completeDraftExercise(id) {
+    setDraftExercises((currentExercises) =>
+      currentExercises.map((item) => {
+        if (item.id !== id) return item;
+
+        return {
+          ...item,
+          ...normalizeDraftExercise(item),
+          completed: true
+        };
+      })
+    );
+  }
+
+  function editDraftExercise(id) {
+    setDraftExercises((currentExercises) =>
+      currentExercises.map((item) =>
+        item.id === id ? { ...item, completed: false } : item
+      )
+    );
   }
 
   function saveSession() {
@@ -902,12 +971,23 @@ export default function App() {
             <h3>Current Session</h3>
 
             {draftExercises.length > 0 && (
-              <p
-                aria-live="polite"
-                style={draftSaveError ? styles.errorText : styles.draftStatus}
-              >
-                {draftSaveError || "Current workout saved on this device"}
-              </p>
+              <>
+                <p
+                  aria-live="polite"
+                  style={draftSaveError ? styles.errorText : styles.draftStatus}
+                >
+                  {draftSaveError || "Current workout saved on this device"}
+                </p>
+                <div style={styles.completionStatus} aria-live="polite">
+                  <strong>{completionSummary}</strong>
+                  <progress
+                    style={styles.completionProgress}
+                    max={draftExercises.length}
+                    value={completedExerciseCount}
+                    aria-label={completionSummary}
+                  />
+                </div>
+              </>
             )}
 
             {draftExercises.length === 0 ? (
@@ -926,6 +1006,8 @@ export default function App() {
                     <SortableDraftExercise
                       key={item.id}
                       item={item}
+                      onComplete={completeDraftExercise}
+                      onEdit={editDraftExercise}
                       onRemove={removeDraftExercise}
                       onUpdate={updateDraftExercise}
                     />
@@ -936,7 +1018,7 @@ export default function App() {
 
             <div style={styles.buttonRow}>
               <button style={styles.button} onClick={saveSession} disabled={draftExercises.length === 0}>
-                Save Session
+                Save Full Session
               </button>
             </div>
           </div>
@@ -1164,6 +1246,14 @@ const styles = {
     background: "#fff",
     cursor: "pointer"
   },
+  completeButton: {
+    padding: "10px 14px",
+    borderRadius: 8,
+    border: "none",
+    background: "#167547",
+    color: "#fff",
+    cursor: "pointer"
+  },
   addedButton: {
     padding: "10px 14px",
     borderRadius: 8,
@@ -1195,12 +1285,23 @@ const styles = {
     background: "#fff",
     marginBottom: 10
   },
+  completedListItem: {
+    borderColor: "#86b893",
+    background: "#f5fbf6"
+  },
   draftItemToolbar: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
     marginBottom: 10
+  },
+  draftItemActions: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
+    flexWrap: "wrap"
   },
   dragHandle: {
     width: 44,
@@ -1221,12 +1322,55 @@ const styles = {
   draftDetails: {
     width: "100%"
   },
+  completedExercise: {
+    width: "100%"
+  },
+  completedExerciseHeading: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap"
+  },
+  completedExerciseName: {
+    overflowWrap: "anywhere"
+  },
+  completedBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    minHeight: 28,
+    padding: "3px 9px",
+    borderRadius: 8,
+    background: "#dff3e5",
+    color: "#166534",
+    fontSize: 14,
+    fontWeight: 700
+  },
+  completedExerciseSummary: {
+    marginTop: 8,
+    color: "#28543a",
+    fontWeight: 600
+  },
   suggestionReference: {
     color: "#555",
     marginTop: 10
   },
   actualSummary: {
     fontWeight: 600
+  },
+  completionStatus: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 14,
+    flexWrap: "wrap"
+  },
+  completionProgress: {
+    width: 180,
+    maxWidth: "100%",
+    height: 12,
+    accentColor: "#167547"
   },
   compactGrid: {
     display: "grid",
