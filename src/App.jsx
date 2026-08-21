@@ -25,6 +25,14 @@ import {
 } from "firebase/auth";
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
+import {
+  MAX_REPS,
+  MIN_LOGGED_SETS,
+  buildDeloadRecommendation,
+  buildRecommendation,
+  isProgressionEligible,
+  safeNumber
+} from "./workoutLogic";
 
 const STORAGE_KEY = "workout-tracker-v1";
 const HIDDEN_RECOMMENDATIONS_KEY = "workout-tracker-hidden-recommendations-v1";
@@ -44,17 +52,6 @@ const EXERCISES = [
   { name: "Face Pull", increment: 5 },
   { name: "Custom Exercise", increment: 5 }
 ];
-
-const MIN_REPS = 10;
-const MAX_REPS = 20;
-const MIN_SETS = 2;
-const MAX_SETS = 4;
-const MIN_LOGGED_SETS = 1;
-
-function safeNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
 
 function parseLocalDate(dateString) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateString);
@@ -132,56 +129,6 @@ function mergeSessions(primarySessions, secondarySessions) {
 
 function getMigrationKey(uid) {
   return `${STORAGE_KEY}-cloud-migrated-${uid}`;
-}
-
-function simpleProgression(
-  weight,
-  completedReps,
-  weightIncrement,
-  minimumReps = MIN_REPS,
-  maximumReps = MAX_REPS
-) {
-  if (completedReps >= maximumReps) {
-    const newWeight = weight + weightIncrement;
-
-    if (weight <= 0) {
-      return {
-        weight: newWeight,
-        targetReps: minimumReps
-      };
-    }
-
-    const percentageIncrease = newWeight / weight;
-    const percentIncrease = (percentageIncrease - 1) * 100;
-    const estimatedRepDrop = Math.ceil(percentIncrease * 0.6 - 1e-9);
-
-    return {
-      weight: newWeight,
-      targetReps: Math.max(minimumReps, maximumReps - estimatedRepDrop)
-    };
-  }
-
-  return {
-    weight,
-    targetReps: Math.min(
-      maximumReps,
-      Math.max(minimumReps, completedReps + 1)
-    )
-  };
-}
-
-function buildRecommendation(entry) {
-  const sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
-  const completedReps = Math.max(1, safeNumber(entry.reps, MIN_REPS));
-  const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
-  const increment = getExerciseMeta(entry.exercise).increment;
-  const progression = simpleProgression(completedWeight, completedReps, increment);
-
-  return {
-    sets,
-    reps: progression.targetReps,
-    weight: progression.weight
-  };
 }
 
 function SortableDraftExercise({
@@ -268,7 +215,7 @@ function SortableDraftExercise({
 
           {item.suggested && (
             <div style={styles.suggestionReference}>
-              Suggested: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
+              {item.suggested.mode === "deload" ? "Deload target" : "Suggested"}: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
               {item.suggested.weight} lb
             </div>
           )}
@@ -320,15 +267,28 @@ function SortableDraftExercise({
           </div>
         </div>
       )}
+      <label style={styles.progressionControl}>
+        <input
+          type="checkbox"
+          style={styles.progressionCheckbox}
+          checked={item.useForProgression !== false}
+          onChange={(event) =>
+            onUpdate(item.id, "useForProgression", event.target.checked)
+          }
+        />
+        <span>Use this exercise for future recommendations</span>
+      </label>
     </div>
   );
 }
 
 export default function App() {
   const [initialDraft] = useState(loadDraftSession);
+  const initialSessionMode = initialDraft?.workoutMode === "deload" ? "deload" : "normal";
   const [sessions, setSessions] = useState([]);
   const [sessionName, setSessionName] = useState(initialDraft?.sessionName || "Gym Session");
   const [sessionDate, setSessionDate] = useState(initialDraft?.date || getLocalDateValue());
+  const [sessionMode, setSessionMode] = useState(initialSessionMode);
 
   const [exercise, setExercise] = useState("Bench Press");
   const [customExercise, setCustomExercise] = useState("");
@@ -336,7 +296,15 @@ export default function App() {
   const [reps, setReps] = useState("10");
   const [weight, setWeight] = useState("135");
 
-  const [draftExercises, setDraftExercises] = useState(initialDraft?.exercises || []);
+  const [draftExercises, setDraftExercises] = useState(
+    (initialDraft?.exercises || []).map((item) => ({
+      ...item,
+      useForProgression:
+        typeof item.useForProgression === "boolean"
+          ? item.useForProgression
+          : initialSessionMode !== "deload"
+    }))
+  );
   const [draftSaveError, setDraftSaveError] = useState("");
   const [hiddenRecommendations, setHiddenRecommendations] = useState({});
   const [showRecommendations, setShowRecommendations] = useState(true);
@@ -399,6 +367,7 @@ export default function App() {
         JSON.stringify({
           sessionName,
           date: sessionDate,
+          workoutMode: sessionMode,
           exercises: draftExercises,
           updatedAt: new Date().toISOString()
         })
@@ -408,7 +377,7 @@ export default function App() {
       console.error("Failed to save current workout", err);
       setDraftSaveError("This current workout could not be saved on this device.");
     }
-  }, [sessionName, sessionDate, draftExercises]);
+  }, [sessionName, sessionDate, sessionMode, draftExercises]);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -537,12 +506,15 @@ export default function App() {
 
     for (const session of sortedSessions) {
       for (const item of session.exercises) {
+        if (!isProgressionEligible(session, item)) continue;
+
         if (!map[item.exercise]) {
           map[item.exercise] = {
             ...item,
             date: session.date,
             sessionName: session.sessionName,
-            sessionId: session.id
+            sessionId: session.id,
+            workoutMode: session.workoutMode || "normal"
           };
         }
       }
@@ -553,16 +525,28 @@ export default function App() {
 
   const recommendations = useMemo(() => {
     return Object.values(latestByExercise)
-      .map((entry) => ({
-        exercise: entry.exercise,
-        date: entry.date,
-        sessionName: entry.sessionName,
-        sessionId: entry.sessionId,
-        recommendation: buildRecommendation(entry)
-      }))
+      .map((entry) => {
+        const increment = getExerciseMeta(entry.exercise).increment;
+        const normalRecommendation = buildRecommendation(entry, increment);
+        const deloadRecommendation = buildDeloadRecommendation(entry, increment);
+
+        return {
+          exercise: entry.exercise,
+          date: entry.date,
+          sessionName: entry.sessionName,
+          sessionId: entry.sessionId,
+          baseline: {
+            sets: entry.sets,
+            reps: entry.reps,
+            weight: entry.weight
+          },
+          recommendation:
+            sessionMode === "deload" ? deloadRecommendation : normalRecommendation
+        };
+      })
       .filter((item) => hiddenRecommendations[item.exercise] !== item.sessionId)
       .sort((a, b) => a.exercise.localeCompare(b.exercise));
-  }, [hiddenRecommendations, latestByExercise]);
+  }, [hiddenRecommendations, latestByExercise, sessionMode]);
 
   const hiddenRecommendationCount = useMemo(() => {
     return Object.values(latestByExercise).filter(
@@ -588,6 +572,61 @@ export default function App() {
     draftExercises.length === 1 ? "exercise" : "exercises"
   } completed`;
 
+  function getRecommendationForMode(exerciseName, mode) {
+    const entry = latestByExercise[exerciseName];
+    if (!entry) return null;
+
+    const increment = getExerciseMeta(exerciseName).increment;
+    return mode === "deload"
+      ? buildDeloadRecommendation(entry, increment)
+      : buildRecommendation(entry, increment);
+  }
+
+  function matchesSuggestion(item) {
+    if (!item.suggested) return false;
+
+    return ["sets", "reps", "weight"].every(
+      (field) => safeNumber(item[field]) === safeNumber(item.suggested[field])
+    );
+  }
+
+  function changeSessionMode(nextMode) {
+    if (nextMode === sessionMode) return;
+
+    setDraftExercises((currentExercises) =>
+      currentExercises.map((item) => {
+        const nextRecommendation = getRecommendationForMode(item.exercise, nextMode);
+        const shouldUpdateTarget =
+          !item.completed && nextRecommendation && matchesSuggestion(item);
+
+        return {
+          ...item,
+          ...(shouldUpdateTarget
+            ? {
+                ...nextRecommendation,
+                suggested: {
+                  ...nextRecommendation,
+                  mode: nextMode
+                }
+              }
+            : {}),
+          useForProgression: nextMode !== "deload"
+        };
+      })
+    );
+
+    setSessionMode(nextMode);
+    setSessionName((currentName) => {
+      if (nextMode === "deload" && ["Gym Session", "Recommended Session"].includes(currentName)) {
+        return "Deload Session";
+      }
+      if (nextMode === "normal" && currentName === "Deload Session") {
+        return "Gym Session";
+      }
+      return currentName;
+    });
+  }
+
   function resetExerciseForm() {
     setExercise("Bench Press");
     setCustomExercise("");
@@ -611,7 +650,8 @@ export default function App() {
         exercise: finalExercise,
         sets: parsedSets,
         reps: parsedReps,
-        weight: parsedWeight
+        weight: parsedWeight,
+        useForProgression: sessionMode !== "deload"
       }
     ]);
 
@@ -646,7 +686,11 @@ export default function App() {
       exercise: item.exercise.trim() || "Exercise",
       sets: Math.max(MIN_LOGGED_SETS, safeNumber(item.sets, 3)),
       reps: Math.max(1, safeNumber(item.reps, 10)),
-      weight: Math.max(0, safeNumber(item.weight, 0))
+      weight: Math.max(0, safeNumber(item.weight, 0)),
+      useForProgression:
+        typeof item.useForProgression === "boolean"
+          ? item.useForProgression
+          : sessionMode !== "deload"
     };
   }
 
@@ -679,6 +723,7 @@ export default function App() {
       id: crypto.randomUUID(),
       sessionName: sessionName.trim() || "Gym Session",
       date: sessionDate,
+      workoutMode: sessionMode,
       createdAt: new Date().toISOString(),
       exercises: draftExercises.map(normalizeDraftExercise)
     };
@@ -687,6 +732,7 @@ export default function App() {
     setDraftExercises([]);
     setSessionName("Gym Session");
     setSessionDate(getLocalDateValue());
+    setSessionMode("normal");
     resetExerciseForm();
   }
 
@@ -733,10 +779,12 @@ export default function App() {
             sets: item.recommendation.sets,
             reps: item.recommendation.reps,
             weight: item.recommendation.weight,
+            useForProgression: sessionMode !== "deload",
             suggested: {
               sets: item.recommendation.sets,
               reps: item.recommendation.reps,
-              weight: item.recommendation.weight
+              weight: item.recommendation.weight,
+              mode: sessionMode
             }
           }
         ];
@@ -757,17 +805,19 @@ export default function App() {
             sets: item.recommendation.sets,
             reps: item.recommendation.reps,
             weight: item.recommendation.weight,
+            useForProgression: sessionMode !== "deload",
             suggested: {
               sets: item.recommendation.sets,
               reps: item.recommendation.reps,
-              weight: item.recommendation.weight
+              weight: item.recommendation.weight,
+              mode: sessionMode
             }
           }));
 
         return [...prev, ...additions];
       });
 
-      setSessionName("Recommended Session");
+      setSessionName(sessionMode === "deload" ? "Deload Session" : "Recommended Session");
       setSessionDate(getLocalDateValue());
     });
   }
@@ -871,6 +921,42 @@ export default function App() {
         <div style={styles.section}>
           <h2>Log Session</h2>
 
+          <div style={styles.modeField}>
+            <label style={styles.label}>Workout Mode</label>
+            <div style={styles.segmentedControl} role="group" aria-label="Workout mode">
+              <button
+                type="button"
+                aria-pressed={sessionMode === "normal"}
+                style={
+                  sessionMode === "normal"
+                    ? styles.activeNormalSegment
+                    : styles.inactiveSegment
+                }
+                onClick={() => changeSessionMode("normal")}
+              >
+                Normal
+              </button>
+              <button
+                type="button"
+                aria-pressed={sessionMode === "deload"}
+                style={
+                  sessionMode === "deload"
+                    ? styles.activeDeloadSegment
+                    : styles.inactiveSegment
+                }
+                onClick={() => changeSessionMode("deload")}
+              >
+                Deload
+              </button>
+            </div>
+            {sessionMode === "deload" && (
+              <p style={styles.deloadNotice}>
+                Deload targets use your last progression workout and are excluded from future
+                recommendations unless you opt an exercise back in.
+              </p>
+            )}
+          </div>
+
           <div style={styles.grid}>
             <div>
               <label style={styles.label}>Session Name</label>
@@ -968,7 +1054,10 @@ export default function App() {
           </div>
 
           <div style={styles.card}>
-            <h3>Current Session</h3>
+            <div style={styles.currentSessionHeading}>
+              <h3 style={styles.flushHeading}>Current Session</h3>
+              {sessionMode === "deload" && <span style={styles.deloadBadge}>Deload</span>}
+            </div>
 
             {draftExercises.length > 0 && (
               <>
@@ -1026,7 +1115,10 @@ export default function App() {
 
         <div ref={recommendationsSectionRef} style={styles.section}>
           <div style={styles.headerRow}>
-            <h2>Recommendations</h2>
+            <div style={styles.currentSessionHeading}>
+              <h2 style={styles.flushHeading}>Recommendations</h2>
+              {sessionMode === "deload" && <span style={styles.deloadBadge}>Deload</span>}
+            </div>
             <div style={styles.buttonRow}>
               <button style={styles.secondaryButton} onClick={() => setShowRecommendations((show) => !show)}>
                 {showRecommendations ? "Minimize" : "Show"}
@@ -1045,6 +1137,8 @@ export default function App() {
                   ? "No Recommendations"
                   : remainingRecommendationCount === 0
                   ? "All Recommendations Added"
+                  : sessionMode === "deload"
+                  ? `Use All Deload Targets (${remainingRecommendationCount})`
                   : `Use All Recommendations (${remainingRecommendationCount})`}
               </button>
             </div>
@@ -1055,21 +1149,31 @@ export default function App() {
               <p>
                 {hiddenRecommendationCount > 0
                   ? "No active suggestions. Restore deleted suggestions to see hidden ones again."
-                  : "Save your first session to see recommendations."}
+                  : "Save an exercise that is used for progression to see recommendations."}
               </p>
             ) : (
               recommendations.map((item) => (
                 <div key={item.exercise} style={styles.card}>
                   <strong>{item.exercise}</strong>
-                  <div style={{ marginTop: 8 }}>Last logged: {formatDate(item.date)}</div>
-                  <div>From session: {item.sessionName}</div>
                   <div style={{ marginTop: 8 }}>
-                    Recommended: {item.recommendation.sets} sets × {item.recommendation.reps} reps @{" "}
+                    Last progression workout: {formatDate(item.date)}
+                  </div>
+                  <div>From session: {item.sessionName}</div>
+                  {sessionMode === "deload" && (
+                    <div>
+                      Based on: {item.baseline.sets} sets × {item.baseline.reps} reps @{" "}
+                      {item.baseline.weight} lb
+                    </div>
+                  )}
+                  <div style={{ marginTop: 8 }}>
+                    {sessionMode === "deload" ? "Deload target" : "Recommended"}:{" "}
+                    {item.recommendation.sets} sets × {item.recommendation.reps} reps @{" "}
                     {item.recommendation.weight} lb
                   </div>
                   <div style={{ marginTop: 8, color: "#555" }}>
-                    Rule: add one rep at a time up to 20. After 20, add weight and reduce the rep
-                    target based on the percentage weight increase, with a minimum of 10 reps.
+                    {sessionMode === "deload"
+                      ? "Rule: use 90% weight, half the sets, and 75% of the reps from the last progression workout. Weight rounds down unless that would reduce it by more than 25%. Keep every set comfortably short of failure."
+                      : "Rule: add one rep at a time up to 20. After 20, add weight and reduce the rep target based on the percentage weight increase, with a minimum of 10 reps."}
                   </div>
                   <div style={styles.buttonRow}>
                     <button
@@ -1083,6 +1187,8 @@ export default function App() {
                     >
                       {draftExerciseNames.has(item.exercise)
                         ? "Added to Current Workout"
+                        : sessionMode === "deload"
+                        ? "Use Deload Target"
                         : "Use Recommendation"}
                     </button>
                     <button style={styles.deleteButton} onClick={() => hideRecommendation(item)}>
@@ -1125,7 +1231,12 @@ export default function App() {
                 <div key={session.id} style={styles.card}>
                   <div style={styles.headerRow}>
                     <div>
-                      <strong>{session.sessionName}</strong>
+                      <div style={styles.historyTitleRow}>
+                        <strong>{session.sessionName}</strong>
+                        {session.workoutMode === "deload" && (
+                          <span style={styles.deloadBadge}>Deload</span>
+                        )}
+                      </div>
                       <div>{formatDate(session.date)}</div>
                     </div>
                     <button style={styles.deleteButton} onClick={() => deleteSession(session.id)}>
@@ -1134,14 +1245,28 @@ export default function App() {
                   </div>
 
                   <div style={{ marginTop: 12 }}>
-                    {session.exercises.map((item) => (
-                      <div key={item.id} style={styles.smallCard}>
-                        <strong>{item.exercise}</strong>
-                        <div>
-                          {item.sets} sets × {item.reps} reps @ {item.weight} lb
+                    {session.exercises.map((item) => {
+                      const usedForProgression = isProgressionEligible(session, item);
+
+                      return (
+                        <div key={item.id} style={styles.smallCard}>
+                          <strong>{item.exercise}</strong>
+                          <div>
+                            {item.sets} sets × {item.reps} reps @ {item.weight} lb
+                          </div>
+                          {!usedForProgression && (
+                            <div style={styles.progressionExcluded}>
+                              Not used for future recommendations
+                            </div>
+                          )}
+                          {session.workoutMode === "deload" && usedForProgression && (
+                            <div style={styles.progressionIncluded}>
+                              Used for future recommendations
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ))
@@ -1218,6 +1343,51 @@ const styles = {
     marginBottom: 6,
     fontWeight: 600
   },
+  modeField: {
+    marginBottom: 16
+  },
+  segmentedControl: {
+    display: "inline-grid",
+    gridTemplateColumns: "repeat(2, minmax(100px, 1fr))",
+    border: "1px solid #aeb5bd",
+    borderRadius: 8,
+    overflow: "hidden"
+  },
+  inactiveSegment: {
+    minHeight: 44,
+    padding: "8px 16px",
+    border: "none",
+    background: "#fff",
+    color: "#333",
+    cursor: "pointer"
+  },
+  activeNormalSegment: {
+    minHeight: 44,
+    padding: "8px 16px",
+    border: "none",
+    background: "#2563eb",
+    color: "#fff",
+    fontWeight: 700,
+    cursor: "pointer"
+  },
+  activeDeloadSegment: {
+    minHeight: 44,
+    padding: "8px 16px",
+    border: "none",
+    background: "#167547",
+    color: "#fff",
+    fontWeight: 700,
+    cursor: "pointer"
+  },
+  deloadNotice: {
+    maxWidth: 680,
+    marginTop: 10,
+    marginBottom: 0,
+    padding: "10px 12px",
+    borderLeft: "4px solid #167547",
+    background: "#f1f8f3",
+    color: "#28543a"
+  },
   input: {
     width: "100%",
     padding: 10,
@@ -1285,6 +1455,26 @@ const styles = {
     background: "#fff",
     marginBottom: 10
   },
+  currentSessionHeading: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap"
+  },
+  flushHeading: {
+    margin: 0
+  },
+  deloadBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    minHeight: 26,
+    padding: "2px 8px",
+    borderRadius: 8,
+    background: "#dff3e5",
+    color: "#166534",
+    fontSize: 13,
+    fontWeight: 700
+  },
   completedListItem: {
     borderColor: "#86b893",
     background: "#f5fbf6"
@@ -1322,6 +1512,23 @@ const styles = {
   draftDetails: {
     width: "100%"
   },
+  progressionControl: {
+    display: "flex",
+    alignItems: "center",
+    gap: 9,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTop: "1px solid #e3e3e3",
+    fontWeight: 600,
+    cursor: "pointer"
+  },
+  progressionCheckbox: {
+    width: 20,
+    height: 20,
+    flex: "0 0 20px",
+    margin: 0,
+    accentColor: "#2563eb"
+  },
   completedExercise: {
     width: "100%"
   },
@@ -1349,6 +1556,24 @@ const styles = {
   completedExerciseSummary: {
     marginTop: 8,
     color: "#28543a",
+    fontWeight: 600
+  },
+  historyTitleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap"
+  },
+  progressionExcluded: {
+    marginTop: 6,
+    color: "#666",
+    fontSize: 14,
+    fontWeight: 600
+  },
+  progressionIncluded: {
+    marginTop: 6,
+    color: "#166534",
+    fontSize: 14,
     fontWeight: 600
   },
   suggestionReference: {
