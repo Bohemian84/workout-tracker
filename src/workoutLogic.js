@@ -1,5 +1,10 @@
-export const MIN_REPS = 10;
-export const MAX_REPS = 20;
+export const MIN_REPS = 8;
+export const MAX_REPS = 14;
+export const DEFAULT_REP_RANGE = "8-14";
+export const REP_RANGES = [
+  { id: DEFAULT_REP_RANGE, minimum: MIN_REPS, maximum: MAX_REPS },
+  { id: "10-20", minimum: 10, maximum: 20 }
+];
 export const MIN_SETS = 2;
 export const MAX_SETS = 4;
 export const MIN_LOGGED_SETS = 1;
@@ -7,6 +12,20 @@ export const MIN_LOGGED_SETS = 1;
 export function safeNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+export function getRepRange(value) {
+  return REP_RANGES.find((range) => range.id === value) || REP_RANGES[0];
+}
+
+export function normalizeRepRanges(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([name, range]) => name.trim() && REP_RANGES.some((option) => option.id === range)
+    )
+  );
 }
 
 export function simpleProgression(
@@ -45,14 +64,17 @@ export function simpleProgression(
   };
 }
 
-export function buildRecommendation(entry, weightIncrement) {
+export function buildRecommendation(entry, weightIncrement, repRange = DEFAULT_REP_RANGE) {
+  const { minimum, maximum } = getRepRange(repRange);
   const sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
-  const completedReps = Math.max(1, safeNumber(entry.reps, MIN_REPS));
+  const completedReps = Math.max(1, safeNumber(entry.reps, minimum));
   const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
   const progression = simpleProgression(
     completedWeight,
     completedReps,
-    weightIncrement
+    weightIncrement,
+    minimum,
+    maximum
   );
 
   return {
@@ -81,22 +103,20 @@ function getDeloadWeight(weight, weightIncrement) {
   return roundedDown;
 }
 
-export function buildDeloadRecommendation(entry, weightIncrement) {
+export function buildDeloadRecommendation(entry, weightIncrement, repRange = DEFAULT_REP_RANGE) {
+  const { minimum, maximum } = getRepRange(repRange);
   const completedSets = Math.max(
     MIN_LOGGED_SETS,
     safeNumber(entry.sets, MIN_SETS)
   );
-  const completedReps = Math.max(1, safeNumber(entry.reps, MIN_REPS));
+  const completedReps = Math.max(1, safeNumber(entry.reps, minimum));
   const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
-  const cappedReps = Math.min(MAX_REPS, completedReps);
+  const cappedReps = Math.min(maximum, completedReps);
   const reducedReps = Math.round(cappedReps * 0.75);
 
   return {
     sets: Math.max(MIN_LOGGED_SETS, Math.ceil(completedSets * 0.5)),
-    reps:
-      completedReps < MIN_REPS
-        ? Math.max(1, reducedReps)
-        : Math.min(15, Math.max(MIN_REPS, reducedReps)),
+    reps: Math.max(1, reducedReps),
     weight: getDeloadWeight(completedWeight, weightIncrement)
   };
 }

@@ -26,17 +26,21 @@ import {
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 import {
-  MAX_REPS,
+  MIN_REPS,
   MIN_LOGGED_SETS,
+  REP_RANGES,
   buildDeloadRecommendation,
   buildRecommendation,
+  getRepRange,
   isProgressionEligible,
+  normalizeRepRanges,
   safeNumber
 } from "./workoutLogic";
 
 const STORAGE_KEY = "workout-tracker-v1";
 const HIDDEN_RECOMMENDATIONS_KEY = "workout-tracker-hidden-recommendations-v1";
 const DRAFT_SESSION_KEY = "workout-tracker-draft-session-v1";
+const REP_RANGES_KEY = "workout-tracker-rep-ranges-v1";
 
 const EXERCISES = [
   { name: "Bench Press", increment: 2.5 },
@@ -118,6 +122,19 @@ function loadDraftSession() {
   }
 }
 
+function getRepRangesStorageKey(uid) {
+  return `${REP_RANGES_KEY}-${uid || "guest"}`;
+}
+
+function loadRepRanges(uid) {
+  try {
+    return normalizeRepRanges(JSON.parse(localStorage.getItem(getRepRangesStorageKey(uid)) || "{}"));
+  } catch (err) {
+    console.error("Failed to load rep ranges", err);
+    return {};
+  }
+}
+
 function mergeSessions(primarySessions, secondarySessions) {
   const seen = new Set();
   return [...primarySessions, ...secondarySessions].filter((session) => {
@@ -131,8 +148,32 @@ function getMigrationKey(uid) {
   return `${STORAGE_KEY}-cloud-migrated-${uid}`;
 }
 
+function RepRangeSelect({ exerciseName, value, onChange, disabled, style }) {
+  return (
+    <label style={{ ...styles.repRangeField, ...style }}>
+      <span style={styles.label}>Progression Rep Range</span>
+      <select
+        style={styles.input}
+        aria-label={`Progression rep range for ${exerciseName || "new exercise"}`}
+        value={getRepRange(value).id}
+        disabled={disabled || !exerciseName}
+        onChange={(event) => onChange(exerciseName, event.target.value)}
+      >
+        {REP_RANGES.map((range) => (
+          <option key={range.id} value={range.id}>
+            {range.minimum}-{range.maximum} reps
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function SortableDraftExercise({
   item,
+  repRange,
+  onRepRangeChange,
+  repRangeDisabled,
   onComplete,
   onEdit,
   onRemove,
@@ -267,6 +308,12 @@ function SortableDraftExercise({
           </div>
         </div>
       )}
+      <RepRangeSelect
+        exerciseName={item.exercise.trim()}
+        value={repRange}
+        onChange={onRepRangeChange}
+        disabled={repRangeDisabled}
+      />
       <label style={styles.progressionControl}>
         <input
           type="checkbox"
@@ -285,7 +332,7 @@ function SortableDraftExercise({
 export default function App() {
   const [initialDraft] = useState(loadDraftSession);
   const initialSessionMode = initialDraft?.workoutMode === "deload" ? "deload" : "normal";
-  const [sessions, setSessions] = useState([]);
+  const [sessions, setSessions] = useState(loadLocalSessions);
   const [sessionName, setSessionName] = useState(initialDraft?.sessionName || "Gym Session");
   const [sessionDate, setSessionDate] = useState(initialDraft?.date || getLocalDateValue());
   const [sessionMode, setSessionMode] = useState(initialSessionMode);
@@ -293,7 +340,7 @@ export default function App() {
   const [exercise, setExercise] = useState("Bench Press");
   const [customExercise, setCustomExercise] = useState("");
   const [sets, setSets] = useState("3");
-  const [reps, setReps] = useState("10");
+  const [reps, setReps] = useState(String(MIN_REPS));
   const [weight, setWeight] = useState("135");
 
   const [draftExercises, setDraftExercises] = useState(
@@ -306,7 +353,8 @@ export default function App() {
     }))
   );
   const [draftSaveError, setDraftSaveError] = useState("");
-  const [hiddenRecommendations, setHiddenRecommendations] = useState({});
+  const [hiddenRecommendations, setHiddenRecommendations] = useState(loadHiddenRecommendations);
+  const [exerciseRepRanges, setExerciseRepRanges] = useState(() => loadRepRanges());
   const [showRecommendations, setShowRecommendations] = useState(true);
   const [showHistory, setShowHistory] = useState(true);
   const [user, setUser] = useState(null);
@@ -315,6 +363,8 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState(firebaseConfigured ? "Checking sign-in..." : "Local-only mode");
   const [syncError, setSyncError] = useState("");
   const lastCloudDataJson = useRef("");
+  const repRangeDisabled = !authReady || Boolean(user && !cloudReady);
+  const formExerciseName = exercise === "Custom Exercise" ? customExercise.trim() : exercise;
   const recommendationsSectionRef = useRef(null);
   const dragSensors = useSensors(
     useSensor(MouseSensor, {
@@ -334,11 +384,6 @@ export default function App() {
   );
 
   useEffect(() => {
-    setSessions(loadLocalSessions());
-    setHiddenRecommendations(loadHiddenRecommendations());
-  }, []);
-
-  useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
     } catch (err) {
@@ -353,6 +398,15 @@ export default function App() {
       console.error("Failed to save hidden recommendations", err);
     }
   }, [hiddenRecommendations]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(getRepRangesStorageKey(user?.uid), JSON.stringify(exerciseRepRanges));
+    } catch (err) {
+      console.error("Failed to save rep ranges", err);
+      setSyncError("Could not save rep ranges on this device.");
+    }
+  }, [exerciseRepRanges, user?.uid]);
 
   useEffect(() => {
     try {
@@ -389,6 +443,7 @@ export default function App() {
 
     return onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
+      setExerciseRepRanges(loadRepRanges(currentUser?.uid));
       setAuthReady(true);
       setCloudReady(false);
       setSyncError("");
@@ -417,18 +472,30 @@ export default function App() {
         const mergedHiddenRecommendations = alreadyMigrated
           ? remoteHiddenRecommendations
           : { ...remoteHiddenRecommendations, ...localHiddenRecommendations };
+        const remoteRepRanges = normalizeRepRanges(snapshot.data()?.exerciseRepRanges);
+        const mergedRepRanges = snapshot.data()?.exerciseRepRanges !== undefined
+          ? remoteRepRanges
+          : {
+              ...(!alreadyMigrated ? loadRepRanges() : {}),
+              ...loadRepRanges(user.uid)
+            };
         const hasLocalSessionsToUpload = !alreadyMigrated && mergedSessions.length > remoteSessions.length;
         const hasHiddenRecommendationsToUpload =
           !alreadyMigrated &&
           JSON.stringify(mergedHiddenRecommendations) !== JSON.stringify(remoteHiddenRecommendations);
-        const hasLocalDataToUpload = hasLocalSessionsToUpload || hasHiddenRecommendationsToUpload;
+        const hasRepRangesToUpload =
+          JSON.stringify(mergedRepRanges) !== JSON.stringify(remoteRepRanges);
+        const hasLocalDataToUpload =
+          hasLocalSessionsToUpload || hasHiddenRecommendationsToUpload || hasRepRangesToUpload;
 
         lastCloudDataJson.current = JSON.stringify({
           sessions: mergedSessions,
-          hiddenRecommendations: mergedHiddenRecommendations
+          hiddenRecommendations: mergedHiddenRecommendations,
+          exerciseRepRanges: mergedRepRanges
         });
         setSessions(mergedSessions);
         setHiddenRecommendations(mergedHiddenRecommendations);
+        setExerciseRepRanges(mergedRepRanges);
         setCloudReady(true);
         setSyncStatus(hasLocalDataToUpload ? "Uploading local history..." : "Cloud history loaded.");
 
@@ -439,13 +506,15 @@ export default function App() {
               {
                 sessions: mergedSessions,
                 hiddenRecommendations: mergedHiddenRecommendations,
+                exerciseRepRanges: mergedRepRanges,
                 updatedAt: serverTimestamp()
               },
-              { merge: true }
+              { mergeFields: ["sessions", "hiddenRecommendations", "exerciseRepRanges", "updatedAt"] }
             );
             lastCloudDataJson.current = JSON.stringify({
               sessions: mergedSessions,
-              hiddenRecommendations: mergedHiddenRecommendations
+              hiddenRecommendations: mergedHiddenRecommendations,
+              exerciseRepRanges: mergedRepRanges
             });
             localStorage.setItem(migrationKey, "true");
             setSyncStatus("Local history added to your account.");
@@ -468,7 +537,7 @@ export default function App() {
   useEffect(() => {
     if (!user || !db || !cloudReady) return;
 
-    const cloudDataJson = JSON.stringify({ sessions, hiddenRecommendations });
+    const cloudDataJson = JSON.stringify({ sessions, hiddenRecommendations, exerciseRepRanges });
     if (cloudDataJson === lastCloudDataJson.current) return;
 
     const saveCloudHistory = async () => {
@@ -478,9 +547,10 @@ export default function App() {
           {
             sessions,
             hiddenRecommendations,
+            exerciseRepRanges,
             updatedAt: serverTimestamp()
           },
-          { merge: true }
+          { mergeFields: ["sessions", "hiddenRecommendations", "exerciseRepRanges", "updatedAt"] }
         );
         lastCloudDataJson.current = cloudDataJson;
         setSyncStatus("Cloud history saved.");
@@ -492,7 +562,7 @@ export default function App() {
     };
 
     saveCloudHistory();
-  }, [sessions, hiddenRecommendations, user, cloudReady]);
+  }, [sessions, hiddenRecommendations, exerciseRepRanges, user, cloudReady]);
 
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -527,11 +597,13 @@ export default function App() {
     return Object.values(latestByExercise)
       .map((entry) => {
         const increment = getExerciseMeta(entry.exercise).increment;
-        const normalRecommendation = buildRecommendation(entry, increment);
-        const deloadRecommendation = buildDeloadRecommendation(entry, increment);
+        const repRange = getRepRange(exerciseRepRanges[entry.exercise]).id;
+        const normalRecommendation = buildRecommendation(entry, increment, repRange);
+        const deloadRecommendation = buildDeloadRecommendation(entry, increment, repRange);
 
         return {
           exercise: entry.exercise,
+          repRange,
           date: entry.date,
           sessionName: entry.sessionName,
           sessionId: entry.sessionId,
@@ -546,7 +618,7 @@ export default function App() {
       })
       .filter((item) => hiddenRecommendations[item.exercise] !== item.sessionId)
       .sort((a, b) => a.exercise.localeCompare(b.exercise));
-  }, [hiddenRecommendations, latestByExercise, sessionMode]);
+  }, [hiddenRecommendations, latestByExercise, sessionMode, exerciseRepRanges]);
 
   const hiddenRecommendationCount = useMemo(() => {
     return Object.values(latestByExercise).filter(
@@ -577,9 +649,20 @@ export default function App() {
     if (!entry) return null;
 
     const increment = getExerciseMeta(exerciseName).increment;
+    const repRange = getRepRange(exerciseRepRanges[exerciseName]).id;
     return mode === "deload"
-      ? buildDeloadRecommendation(entry, increment)
-      : buildRecommendation(entry, increment);
+      ? buildDeloadRecommendation(entry, increment, repRange)
+      : buildRecommendation(entry, increment, repRange);
+  }
+
+  function changeExerciseRepRange(exerciseName, repRange) {
+    if (!exerciseName.trim() || repRangeDisabled) return;
+
+    // Preferences affect future suggestions, never numbers already entered in a workout.
+    setExerciseRepRanges((current) => ({
+      ...current,
+      [exerciseName.trim()]: getRepRange(repRange).id
+    }));
   }
 
   function matchesSuggestion(item) {
@@ -631,7 +714,7 @@ export default function App() {
     setExercise("Bench Press");
     setCustomExercise("");
     setSets("3");
-    setReps("10");
+    setReps(String(MIN_REPS));
     setWeight("135");
   }
 
@@ -640,7 +723,7 @@ export default function App() {
     if (!finalExercise) return;
 
     const parsedSets = Math.max(MIN_LOGGED_SETS, safeNumber(sets, 3));
-    const parsedReps = Math.max(1, safeNumber(reps, 10));
+    const parsedReps = Math.max(1, safeNumber(reps, MIN_REPS));
     const parsedWeight = Math.max(0, safeNumber(weight, 0));
 
     setDraftExercises((prev) => [
@@ -685,8 +768,9 @@ export default function App() {
       id: item.id,
       exercise: item.exercise.trim() || "Exercise",
       sets: Math.max(MIN_LOGGED_SETS, safeNumber(item.sets, 3)),
-      reps: Math.max(1, safeNumber(item.reps, 10)),
+      reps: Math.max(1, safeNumber(item.reps, MIN_REPS)),
       weight: Math.max(0, safeNumber(item.weight, 0)),
+      repRange: getRepRange(exerciseRepRanges[item.exercise.trim()]).id,
       useForProgression:
         typeof item.useForProgression === "boolean"
           ? item.useForProgression
@@ -850,7 +934,7 @@ export default function App() {
   }
 
   function exportData() {
-    const blob = new Blob([JSON.stringify(sessions, null, 2)], {
+    const blob = new Blob([JSON.stringify({ version: 2, sessions, exerciseRepRanges }, null, 2)], {
       type: "application/json"
     });
     const url = URL.createObjectURL(blob);
@@ -871,6 +955,9 @@ export default function App() {
         const parsed = JSON.parse(String(e.target?.result || "[]"));
         if (Array.isArray(parsed)) {
           setSessions(parsed);
+        } else if (Array.isArray(parsed?.sessions)) {
+          setSessions(parsed.sessions);
+          setExerciseRepRanges(normalizeRepRanges(parsed.exerciseRepRanges));
         }
       } catch (err) {
         console.error("Invalid import file", err);
@@ -883,9 +970,6 @@ export default function App() {
     <div style={styles.page}>
       <div style={styles.container}>
         <h1 style={styles.title}>Workout Tracker</h1>
-        <p style={styles.subtitle}>
-          Build to 20 reps, then add weight and adjust reps for the size of the weight increase.
-        </p>
 
         <div style={styles.section}>
           <div style={styles.headerRow}>
@@ -1008,6 +1092,14 @@ export default function App() {
                 </div>
               )}
 
+              <RepRangeSelect
+                exerciseName={formExerciseName}
+                value={exerciseRepRanges[formExerciseName]}
+                onChange={changeExerciseRepRange}
+                disabled={repRangeDisabled}
+                style={{ marginBlock: 0, maxWidth: "none" }}
+              />
+
               <div>
                 <label style={styles.label}>Sets</label>
                 <input
@@ -1095,6 +1187,9 @@ export default function App() {
                     <SortableDraftExercise
                       key={item.id}
                       item={item}
+                      repRange={exerciseRepRanges[item.exercise.trim()]}
+                      onRepRangeChange={changeExerciseRepRange}
+                      repRangeDisabled={repRangeDisabled}
                       onComplete={completeDraftExercise}
                       onEdit={editDraftExercise}
                       onRemove={removeDraftExercise}
@@ -1155,6 +1250,12 @@ export default function App() {
               recommendations.map((item) => (
                 <div key={item.exercise} style={styles.card}>
                   <strong>{item.exercise}</strong>
+                  <RepRangeSelect
+                    exerciseName={item.exercise}
+                    value={item.repRange}
+                    onChange={changeExerciseRepRange}
+                    disabled={repRangeDisabled}
+                  />
                   <div style={{ marginTop: 8 }}>
                     Last progression workout: {formatDate(item.date)}
                   </div>
@@ -1169,11 +1270,6 @@ export default function App() {
                     {sessionMode === "deload" ? "Deload target" : "Recommended"}:{" "}
                     {item.recommendation.sets} sets × {item.recommendation.reps} reps @{" "}
                     {item.recommendation.weight} lb
-                  </div>
-                  <div style={{ marginTop: 8, color: "#555" }}>
-                    {sessionMode === "deload"
-                      ? "Rule: use 90% weight, half the sets, and 75% of the reps from the last progression workout. Weight rounds down unless that would reduce it by more than 25%. Keep every set comfortably short of failure."
-                      : "Rule: add one rep at a time up to 20. After 20, add weight and reduce the rep target based on the percentage weight increase, with a minimum of 10 reps."}
                   </div>
                   <div style={styles.buttonRow}>
                     <button
@@ -1254,6 +1350,11 @@ export default function App() {
                           <div>
                             {item.sets} sets × {item.reps} reps @ {item.weight} lb
                           </div>
+                          {item.repRange && (
+                            <div style={styles.rangeSummary}>
+                              Progression range: {getRepRange(item.repRange).id} reps
+                            </div>
+                          )}
                           {!usedForProgression && (
                             <div style={styles.progressionExcluded}>
                               Not used for future recommendations
@@ -1291,10 +1392,6 @@ const styles = {
   },
   title: {
     marginBottom: 8
-  },
-  subtitle: {
-    color: "#555",
-    marginBottom: 24
   },
   statusText: {
     color: "#555",
@@ -1335,8 +1432,19 @@ const styles = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
     gap: 12
+  },
+  repRangeField: {
+    display: "block",
+    maxWidth: 260,
+    width: "100%",
+    marginBlock: 12
+  },
+  rangeSummary: {
+    marginTop: 6,
+    color: "#555",
+    fontSize: 14
   },
   label: {
     display: "block",
