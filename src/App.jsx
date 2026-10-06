@@ -25,6 +25,7 @@ import {
 } from "firebase/auth";
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
+import { preserveScrollPosition } from "./scrollPosition";
 import {
   MIN_REPS,
   MIN_LOGGED_SETS,
@@ -247,8 +248,9 @@ function SortableDraftExercise({
         </div>
       ) : (
         <div style={styles.draftDetails}>
-          <label style={styles.label}>Exercise</label>
+          <label style={styles.label} htmlFor={`exercise-${item.id}`}>Exercise</label>
           <input
+            id={`exercise-${item.id}`}
             style={styles.input}
             value={item.exercise}
             onChange={(e) => onUpdate(item.id, "exercise", e.target.value)}
@@ -263,30 +265,36 @@ function SortableDraftExercise({
 
           <div style={styles.compactGrid}>
             <div>
-              <label style={styles.label}>Actual Sets</label>
+              <label style={styles.label} htmlFor={`sets-${item.id}`}>Actual Sets</label>
               <input
+                id={`sets-${item.id}`}
                 style={styles.input}
                 type="number"
+                inputMode="numeric"
                 min="1"
                 value={item.sets}
                 onChange={(e) => onUpdate(item.id, "sets", e.target.value)}
               />
             </div>
             <div>
-              <label style={styles.label}>Actual Reps</label>
+              <label style={styles.label} htmlFor={`reps-${item.id}`}>Actual Reps</label>
               <input
+                id={`reps-${item.id}`}
                 style={styles.input}
                 type="number"
+                inputMode="numeric"
                 min="1"
                 value={item.reps}
                 onChange={(e) => onUpdate(item.id, "reps", e.target.value)}
               />
             </div>
             <div>
-              <label style={styles.label}>Actual Weight</label>
+              <label style={styles.label} htmlFor={`weight-${item.id}`}>Actual Weight</label>
               <input
+                id={`weight-${item.id}`}
                 style={styles.input}
                 type="number"
+                inputMode="decimal"
                 step="0.5"
                 min="0"
                 value={item.weight}
@@ -836,17 +844,7 @@ export default function App() {
   }
 
   function preserveRecommendationsPosition(update) {
-    const previousTop = recommendationsSectionRef.current?.getBoundingClientRect().top;
-    update();
-
-    if (previousTop === undefined) return;
-
-    requestAnimationFrame(() => {
-      const currentTop = recommendationsSectionRef.current?.getBoundingClientRect().top;
-      if (currentTop !== undefined) {
-        window.scrollBy(0, currentTop - previousTop);
-      }
-    });
+    preserveScrollPosition(recommendationsSectionRef.current, update);
   }
 
   function addRecommendationToDraft(item) {
@@ -1043,8 +1041,9 @@ export default function App() {
 
           <div style={styles.grid}>
             <div>
-              <label style={styles.label}>Session Name</label>
+              <label style={styles.label} htmlFor="session-name">Session Name</label>
               <input
+                id="session-name"
                 style={styles.input}
                 value={sessionName}
                 onChange={(e) => setSessionName(e.target.value)}
@@ -1052,8 +1051,9 @@ export default function App() {
             </div>
 
             <div>
-              <label style={styles.label}>Date</label>
+              <label style={styles.label} htmlFor="session-date">Date</label>
               <input
+                id="session-date"
                 style={styles.input}
                 type="date"
                 value={sessionDate}
@@ -1067,8 +1067,9 @@ export default function App() {
 
             <div style={styles.grid}>
               <div>
-                <label style={styles.label}>Exercise</label>
+                <label style={styles.label} htmlFor="new-exercise">Exercise</label>
                 <select
+                  id="new-exercise"
                   style={styles.input}
                   value={exercise}
                   onChange={(e) => setExercise(e.target.value)}
@@ -1083,8 +1084,9 @@ export default function App() {
 
               {exercise === "Custom Exercise" && (
                 <div>
-                  <label style={styles.label}>Custom Exercise Name</label>
+                  <label style={styles.label} htmlFor="new-exercise-name">Custom Exercise Name</label>
                   <input
+                    id="new-exercise-name"
                     style={styles.input}
                     value={customExercise}
                     onChange={(e) => setCustomExercise(e.target.value)}
@@ -1101,10 +1103,12 @@ export default function App() {
               />
 
               <div>
-                <label style={styles.label}>Sets</label>
+                <label style={styles.label} htmlFor="new-exercise-sets">Sets</label>
                 <input
+                  id="new-exercise-sets"
                   style={styles.input}
                   type="number"
+                  inputMode="numeric"
                   min="1"
                   value={sets}
                   onChange={(e) => setSets(e.target.value)}
@@ -1112,10 +1116,12 @@ export default function App() {
               </div>
 
               <div>
-                <label style={styles.label}>Reps</label>
+                <label style={styles.label} htmlFor="new-exercise-reps">Reps</label>
                 <input
+                  id="new-exercise-reps"
                   style={styles.input}
                   type="number"
+                  inputMode="numeric"
                   min="1"
                   value={reps}
                   onChange={(e) => setReps(e.target.value)}
@@ -1123,10 +1129,12 @@ export default function App() {
               </div>
 
               <div>
-                <label style={styles.label}>Weight</label>
+                <label style={styles.label} htmlFor="new-exercise-weight">Weight</label>
                 <input
+                  id="new-exercise-weight"
                   style={styles.input}
                   type="number"
+                  inputMode="decimal"
                   step="0.5"
                   min="0"
                   value={weight}
@@ -1498,6 +1506,11 @@ const styles = {
   },
   input: {
     width: "100%",
+    // Keep iPhone focus zoom from moving the form when the keyboard opens.
+    fontSize: 16,
+    fontFamily: "inherit",
+    lineHeight: 1.25,
+    minHeight: 44,
     padding: 10,
     borderRadius: 8,
     border: "1px solid #ccc",
