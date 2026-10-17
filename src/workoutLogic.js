@@ -28,6 +28,23 @@ export function normalizeRepRanges(value) {
   );
 }
 
+export function orderRecommendationsByWorkout(recommendations, previousExercises = []) {
+  const positions = new Map();
+
+  for (const item of previousExercises) {
+    if (!positions.has(item.exercise)) {
+      positions.set(item.exercise, positions.size);
+    }
+  }
+
+  // Keep unmatched recommendations in their existing order, after the previous workout.
+  return [...recommendations].sort((a, b) => {
+    const aPosition = positions.get(a.exercise) ?? positions.size;
+    const bPosition = positions.get(b.exercise) ?? positions.size;
+    return aPosition - bPosition;
+  });
+}
+
 export function simpleProgression(
   weight,
   completedReps,

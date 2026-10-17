@@ -7,8 +7,76 @@ import {
   getRepRange,
   isProgressionEligible,
   normalizeRepRanges,
+  orderRecommendationsByWorkout,
   simpleProgression
 } from "./workoutLogic.js";
+
+test("bulk recommendations follow the previous workout instead of alphabetical order", () => {
+  const recommendations = ["Bench Press", "Row", "Squat"].map((exercise) => ({ exercise }));
+  const previousExercises = ["Squat", "Bench Press", "Row"].map((exercise) => ({ exercise }));
+
+  assert.deepEqual(
+    orderRecommendationsByWorkout(recommendations, previousExercises).map((item) => item.exercise),
+    ["Squat", "Bench Press", "Row"]
+  );
+});
+
+test("recommendations missing from the previous workout are appended in their existing order", () => {
+  const recommendations = ["Bench Press", "Face Pull", "Row", "Squat"].map((exercise) => ({ exercise }));
+  const previousExercises = ["Squat", "Row"].map((exercise) => ({ exercise }));
+
+  assert.deepEqual(
+    orderRecommendationsByWorkout(recommendations, previousExercises).map((item) => item.exercise),
+    ["Squat", "Row", "Bench Press", "Face Pull"]
+  );
+});
+
+test("previous workout order does not restore hidden or ineligible recommendations", () => {
+  const recommendations = [{ exercise: "Row" }, { exercise: "Squat" }];
+  const previousExercises = ["Squat", "Hidden Exercise", "Row"].map((exercise) => ({ exercise }));
+
+  assert.deepEqual(orderRecommendationsByWorkout(recommendations, previousExercises), [
+    { exercise: "Squat" }, { exercise: "Row" }
+  ]);
+});
+
+test("repeated exercise names use their first position in the previous workout", () => {
+  const recommendations = [{ exercise: "Row" }, { exercise: "Squat" }];
+  const previousExercises = ["Squat", "Row", "Squat"].map((exercise) => ({ exercise }));
+
+  assert.deepEqual(orderRecommendationsByWorkout(recommendations, previousExercises), [
+    { exercise: "Squat" }, { exercise: "Row" }
+  ]);
+});
+
+test("bulk recommendation order handles empty history and empty recommendations", () => {
+  const recommendations = [{ exercise: "Row" }, { exercise: "Squat" }];
+
+  assert.deepEqual(orderRecommendationsByWorkout(recommendations), recommendations);
+  assert.deepEqual(orderRecommendationsByWorkout(recommendations, []), recommendations);
+  assert.deepEqual(orderRecommendationsByWorkout([], [{ exercise: "Row" }]), []);
+});
+
+test("reordering does not modify saved actuals, recommendation targets, or input arrays", () => {
+  const row = Object.freeze({
+    exercise: "Row", recommendation: Object.freeze({ sets: 3, reps: 11, weight: 105 })
+  });
+  const squat = Object.freeze({
+    exercise: "Squat", recommendation: Object.freeze({ sets: 2, reps: 9, weight: 135 })
+  });
+  const recommendations = Object.freeze([row, squat]);
+  const previousExercises = Object.freeze([
+    Object.freeze({ exercise: "Squat", sets: 2, reps: 8, weight: 135, useForProgression: false }),
+    Object.freeze({ exercise: "Row", sets: 3, reps: 14, weight: 100 })
+  ]);
+
+  const ordered = orderRecommendationsByWorkout(recommendations, previousExercises);
+
+  assert.notEqual(ordered, recommendations);
+  assert.equal(ordered[0], squat);
+  assert.equal(ordered[1], row);
+  assert.deepEqual(recommendations, [row, squat]);
+});
 
 test("the default range adds reps until 14, then increases weight", () => {
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 13, weight: 50 }, 5), {

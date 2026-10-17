@@ -35,6 +35,7 @@ import {
   getRepRange,
   isProgressionEligible,
   normalizeRepRanges,
+  orderRecommendationsByWorkout,
   safeNumber
 } from "./workoutLogic";
 
@@ -879,7 +880,10 @@ export default function App() {
       setDraftExercises((prev) => {
         const existingNames = new Set(prev.map((x) => x.exercise));
 
-        const additions = recommendations
+        const additions = orderRecommendationsByWorkout(
+          recommendations,
+          sortedSessions[0]?.exercises
+        )
           .filter((item) => !existingNames.has(item.exercise))
           .map((item) => ({
             id: crypto.randomUUID(),

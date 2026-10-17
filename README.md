@@ -2,6 +2,12 @@
 
 This app saves workout history locally when signed out and can sync history between devices with Firebase when signed in with Google.
 
+## Workout order
+
+- Use All Recommendations adds exercises in the order of the most recent workout in History, including a deload workout. Recommendations not present in that workout follow afterward in their existing alphabetical order.
+- Exercises already in Current Session stay in place and are not duplicated. Drag to adjust the order as needed; saving the full session remembers that order for next time.
+- Ordering does not change recommendation targets or which workouts are used for progression.
+
 ## Rep ranges and progression
 
 - Exercises default to an 8-14 rep progression range. Select 10-20 for any exercise in Add Exercise, Current Session, or Recommendations.
