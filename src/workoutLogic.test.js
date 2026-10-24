@@ -80,41 +80,41 @@ test("reordering does not modify saved actuals, recommendation targets, or input
 
 test("the default range adds reps until 14, then increases weight", () => {
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 13, weight: 50 }, 5), {
-    sets: 3, reps: 14, weight: 50
+    sets: 3, reps: 13, setReps: [14, 13, 13], weight: 50
   });
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 14, weight: 50 }, 5), {
-    sets: 3, reps: 8, weight: 55
+    sets: 3, reps: 8, setReps: [8, 8, 8], weight: 55
   });
 });
 
 test("weight increases keep the percentage-based rep-drop estimate", () => {
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 14, weight: 100 }, 5), {
-    sets: 3, reps: 11, weight: 105
+    sets: 3, reps: 11, setReps: [11, 11, 11], weight: 105
   });
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 14, weight: 100 }, 2.5), {
-    sets: 3, reps: 12, weight: 102.5
+    sets: 3, reps: 12, setReps: [12, 12, 12], weight: 102.5
   });
 });
 
-test("the higher rep range keeps the previous progression behavior", () => {
+test("the higher rep range increases the lowest set and keeps the weight-increase formula", () => {
   const recommendation = buildRecommendation(
     { sets: 3, reps: 20, weight: 50 },
     5,
     "10-20"
   );
 
-  assert.deepEqual(recommendation, { sets: 3, reps: 14, weight: 55 });
+  assert.deepEqual(recommendation, { sets: 3, reps: 14, setReps: [14, 14, 14], weight: 55 });
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 14, weight: 50 }, 5, "10-20"), {
-    sets: 3, reps: 15, weight: 50
+    sets: 3, reps: 14, setReps: [15, 14, 14], weight: 50
   });
   assert.deepEqual(buildRecommendation({ sets: 3, reps: 19, weight: 50 }, 5, "10-20"), {
-    sets: 3, reps: 20, weight: 50
+    sets: 3, reps: 19, setReps: [20, 19, 19], weight: 50
   });
 });
 
 test("old workouts use the new default without modifying recorded actuals", () => {
   const entry = Object.freeze({ sets: 1, reps: 25, weight: 50 });
-  assert.deepEqual(buildRecommendation(entry, 5), { sets: 2, reps: 8, weight: 55 });
+  assert.deepEqual(buildRecommendation(entry, 5), { sets: 1, reps: 8, setReps: [8], weight: 55 });
   assert.deepEqual(entry, { sets: 1, reps: 25, weight: 50 });
 });
 

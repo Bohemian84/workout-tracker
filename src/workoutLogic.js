@@ -66,10 +66,11 @@ export function normalizeExerciseSets(item) {
 }
 
 export function matchesSuggestion(item) {
-  if (!item.suggested || getExerciseSetError(item)) return false;
+  if (!item.suggested || getExerciseSetError(item) || getExerciseSetError(item.suggested)) return false;
+  const suggestedReps = getSetReps(item.suggested);
   return Number(item.sets) === Number(item.suggested.sets) &&
     safeNumber(item.weight) === safeNumber(item.suggested.weight) &&
-    getSetReps(item).every((reps) => Number(reps) === Number(item.suggested.reps));
+    getSetReps(item).every((reps, index) => Number(reps) === Number(suggestedReps[index]));
 }
 
 export function formatExerciseSummary(item) {
@@ -156,21 +157,27 @@ export function simpleProgression(
 
 export function buildRecommendation(entry, weightIncrement, repRange = DEFAULT_REP_RANGE) {
   const { minimum, maximum } = getRepRange(repRange);
-  const sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
-  const completedReps = Math.max(1, getProgressionReps(entry, minimum));
+  const completedSetReps = getSetReps(entry).map((value) => isValidRepCount(value) ? Number(value) : 0);
+  const lowestReps = Math.min(...completedSetReps);
   const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
-  const progression = simpleProgression(
-    completedWeight,
-    completedReps,
-    weightIncrement,
-    minimum,
-    maximum
-  );
+  let weight = completedWeight;
+  let setReps;
+
+  if (lowestReps >= maximum) {
+    const progression = simpleProgression(completedWeight, lowestReps, weightIncrement, minimum, maximum);
+    weight = progression.weight;
+    setReps = completedSetReps.map(() => progression.targetReps);
+  } else {
+    // Add one total rep, breaking ties in set order and leaving stronger sets unchanged.
+    const lowestIndex = completedSetReps.indexOf(lowestReps);
+    setReps = completedSetReps.map((reps, index) => index === lowestIndex ? reps + 1 : reps);
+  }
 
   return {
-    sets,
-    reps: progression.targetReps,
-    weight: progression.weight
+    sets: setReps.length,
+    reps: Math.min(...setReps),
+    setReps,
+    weight
   };
 }
 

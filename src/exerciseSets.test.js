@@ -18,7 +18,7 @@ test("old exercises and recommendation targets prefill one rep field per set", (
   assert.deepEqual(getSetReps(old), [12, 12, 12]);
   assert.equal(old.setReps, undefined);
   const recommendation = buildRecommendation(old, 5);
-  assert.deepEqual(getSetReps(recommendation), [13, 13, 13]);
+  assert.deepEqual(getSetReps(recommendation), [13, 12, 12]);
 });
 
 test("saving different reps preserves every set and a conservative legacy baseline", () => {
@@ -102,21 +102,25 @@ test("summaries show each new set while retaining the legacy history format", ()
     "3 sets \u00d7 12 reps @ 100 lb");
 });
 
-test("normal progression uses the lowest set, never a stale scalar or the best set", () => {
+test("normal progression raises only the lowest set, ignoring a stale scalar", () => {
   const actuals = { sets: 3, reps: 14, setReps: [14, 12, 10], weight: 100 };
-  assert.deepEqual(buildRecommendation(actuals, 5), { sets: 3, reps: 11, weight: 100 });
+  assert.deepEqual(buildRecommendation(actuals, 5), {
+    sets: 3, reps: 11, setReps: [14, 12, 11], weight: 100
+  });
   assert.equal(buildRecommendation({ ...actuals, setReps: [14, 14, 13] }, 5).weight, 100);
   assert.deepEqual(buildRecommendation({ ...actuals, setReps: [14, 15, 14] }, 5), {
-    sets: 3, reps: 11, weight: 105
+    sets: 3, reps: 11, setReps: [11, 11, 11], weight: 105
   });
   assert.equal(buildRecommendation({ ...actuals, setReps: [14, 14, 0] }, 5).weight, 100);
 });
 
 test("the higher rep range also requires every set to reach its upper limit", () => {
   const actuals = { sets: 3, reps: 20, setReps: [20, 18, 16], weight: 100 };
-  assert.deepEqual(buildRecommendation(actuals, 5, "10-20"), { sets: 3, reps: 17, weight: 100 });
+  assert.deepEqual(buildRecommendation(actuals, 5, "10-20"), {
+    sets: 3, reps: 17, setReps: [20, 18, 17], weight: 100
+  });
   assert.deepEqual(buildRecommendation({ ...actuals, setReps: [20, 20, 20] }, 5, "10-20"), {
-    sets: 3, reps: 17, weight: 105
+    sets: 3, reps: 17, setReps: [17, 17, 17], weight: 105
   });
 });
 
@@ -136,4 +140,79 @@ test("switching modes recognizes any edited set instead of overwriting it", () =
   assert.equal(matchesSuggestion({ ...draft, weight: 95 }), false);
   assert.equal(matchesSuggestion({ ...suggested, suggested }), true);
   assert.equal(matchesSuggestion(suggested), false);
+});
+
+test("the lowest sets catch up one rep at a time before weight increases", () => {
+  let actuals = { sets: 3, setReps: [14, 12, 10], weight: 100 };
+  for (const expected of [
+    [14, 12, 11], [14, 12, 12], [14, 13, 12],
+    [14, 13, 13], [14, 14, 13], [14, 14, 14]
+  ]) {
+    actuals = buildRecommendation(actuals, 5);
+    assert.deepEqual(actuals.setReps, expected);
+    assert.equal(actuals.weight, 100);
+  }
+  assert.deepEqual(buildRecommendation(actuals, 5), {
+    sets: 3, reps: 11, setReps: [11, 11, 11], weight: 105
+  });
+});
+
+test("a tied minimum increases only the first tied set and never reorders sets", () => {
+  for (const [completed, expected] of [
+    [[12, 12, 12], [13, 12, 12]],
+    [[10, 14, 10], [11, 14, 10]],
+    [[14, 12, 12], [14, 13, 12]]
+  ]) {
+    assert.deepEqual(buildRecommendation({ sets: 3, setReps: completed, weight: 100 }, 5).setReps, expected);
+  }
+});
+
+test("low and zero reps advance by one, without raising the other sets or jumping to the range floor", () => {
+  for (const [completed, expected] of [
+    [[14, 12, 6], [14, 12, 7]],
+    [[14, 12, 0], [14, 12, 1]],
+    [[16, 12, 10], [16, 12, 11]]
+  ]) {
+    const result = buildRecommendation({ sets: 3, setReps: completed, weight: 100 }, 5);
+    assert.deepEqual(result.setReps, expected);
+    assert.equal(result.weight, 100);
+  }
+});
+
+test("per-set recommendations retain one set or more than four sets", () => {
+  assert.deepEqual(buildRecommendation({ sets: 1, setReps: [10], weight: 50 }, 5), {
+    sets: 1, reps: 11, setReps: [11], weight: 50
+  });
+  assert.deepEqual(buildRecommendation({ sets: 5, setReps: [14, 13, 12, 11, 10], weight: 100 }, 5), {
+    sets: 5, reps: 11, setReps: [14, 13, 12, 11, 11], weight: 100
+  });
+});
+
+test("suggestion matching and summaries retain unequal per-set targets", () => {
+  const suggested = buildRecommendation({ sets: 3, setReps: [14, 12, 10], weight: 100 }, 5);
+  const draft = { ...suggested, setReps: getSetReps(suggested), suggested };
+  assert.equal(matchesSuggestion(draft), true);
+  assert.equal(formatExerciseSummary(suggested), "3 sets (14 / 12 / 11 reps) @ 100 lb");
+  assert.equal(matchesSuggestion({ ...draft, setReps: [14, 13, 11] }), false);
+  assert.equal(matchesSuggestion({ ...draft, setReps: [11, 11, 11] }), false);
+  draft.setReps[1] = 13;
+  assert.deepEqual(suggested.setReps, [14, 12, 11]);
+  const restored = JSON.parse(JSON.stringify(draft));
+  assert.equal(matchesSuggestion(restored), false);
+  assert.deepEqual(restored.suggested.setReps, [14, 12, 11]);
+});
+
+test("recommendations add exactly one total rep without mutating completed sets", () => {
+  for (const range of ["8-14", "10-20"]) {
+    const maximum = range === "8-14" ? 14 : 20;
+    for (let low = 0; low < maximum; low += 1) {
+      const completed = Object.freeze([maximum, low, low]);
+      const actuals = Object.freeze({ sets: 3, setReps: completed, weight: 100 });
+      const next = buildRecommendation(actuals, 5, range);
+      assert.deepEqual(next.setReps, [maximum, low + 1, low]);
+      assert.equal(next.setReps.reduce((total, reps) => total + reps, 0), maximum + low * 2 + 1);
+      assert.equal(next.weight, 100);
+      assert.deepEqual(actuals.setReps, [maximum, low, low]);
+    }
+  }
 });

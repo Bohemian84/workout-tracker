@@ -269,8 +269,7 @@ function SortableDraftExercise({
 
           {item.suggested && (
             <div style={styles.suggestionReference}>
-              {item.suggested.mode === "deload" ? "Deload target" : "Suggested"}: {item.suggested.sets} sets × {item.suggested.reps} reps @{" "}
-              {item.suggested.weight} lb
+              {item.suggested.mode === "deload" ? "Deload target" : "Suggested"}: {formatExerciseSummary(item.suggested)}
             </div>
           )}
 
@@ -898,6 +897,7 @@ export default function App() {
             suggested: {
               sets: item.recommendation.sets,
               reps: item.recommendation.reps,
+              setReps: getSetReps(item.recommendation),
               weight: item.recommendation.weight,
               mode: sessionMode
             }
@@ -928,6 +928,7 @@ export default function App() {
             suggested: {
               sets: item.recommendation.sets,
               reps: item.recommendation.reps,
+              setReps: getSetReps(item.recommendation),
               weight: item.recommendation.weight,
               mode: sessionMode
             }
@@ -1332,8 +1333,7 @@ export default function App() {
                   )}
                   <div style={{ marginTop: 8 }}>
                     {sessionMode === "deload" ? "Deload target" : "Recommended"}:{" "}
-                    {item.recommendation.sets} sets × {item.recommendation.reps} reps @{" "}
-                    {item.recommendation.weight} lb
+                    {formatExerciseSummary(item.recommendation)}
                   </div>
                   <div style={styles.buttonRow}>
                     <button
