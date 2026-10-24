@@ -10,13 +10,16 @@ This app saves workout history locally when signed out and can sync history betw
 
 ## Rep ranges and progression
 
+- Current Session records reps separately for each set, with one weight for the exercise. Add Exercise and recommendations prefill each set; the individual counts remain editable until the session is saved. Zero reps are allowed, but blank, negative, or fractional counts cannot be saved.
+- Save Exercise, Edit, draft recovery, history, Firebase sync, and export/import retain every set's reps. Existing history is not rewritten; older records without per-set counts keep their original uniform-rep summary.
+- For new per-set records, progression and deload targets use the lowest completed rep count. Weight only increases when every recorded set reaches the upper limit. The existing rep-range floor and weight-increase formula remain unchanged.
 - Exercises default to an 8-14 rep progression range. Select 10-20 for any exercise in Add Exercise, Current Session, or Recommendations.
 - Ranges are remembered per exercise name and sync with the signed-in account. Changing a range updates future suggestions, not current workout numbers or historical sets, reps, and weights.
 - Below the upper limit, recommendations add one rep at the same weight. At or above it, they add the exercise's existing weight increment and estimate a rep reduction of 0.6 reps per percentage point of added weight, rounded up and limited to the selected range. This is an editable estimate, not a prediction of lifting capacity.
 - Deloads retain 90% weight (rounded down to an available increment unless that cuts more than 25%), half the sets rounded up, and 75% of completed reps rounded to a whole rep. Reps are capped at the selected range's maximum before reducing them. This usually means 6-11 reps for 8-14 training or 8-15 reps for 10-20 training; lower actual reps remain lower. Deloads remain excluded from progression by default.
 - Existing history without range settings remains valid and uses the new default for future recommendations. Export includes history and range preferences; Import accepts both the new backup format and older history-only arrays.
 
-Run `npm test` to check recommendation math and `npm run build` to verify the production build.
+Run `npm test` to check per-set recording, ordering, scrolling, and recommendation math, and `npm run build` to verify the production build.
 
 ## Firebase setup
 

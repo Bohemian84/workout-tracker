@@ -8,10 +8,83 @@ export const REP_RANGES = [
 export const MIN_SETS = 2;
 export const MAX_SETS = 4;
 export const MIN_LOGGED_SETS = 1;
+export const MAX_LOGGED_SETS = 100;
 
 export function safeNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+export function isValidRepCount(value) {
+  return (typeof value === "number" || typeof value === "string") &&
+    String(value).trim() !== "" && Number.isSafeInteger(Number(value)) && Number(value) >= 0;
+}
+
+export function isValidSetCount(value) {
+  return isValidRepCount(value) && Number(value) >= MIN_LOGGED_SETS &&
+    Number(value) <= MAX_LOGGED_SETS;
+}
+
+export function getSetReps(item) {
+  const savedReps = Array.isArray(item.setReps) ? item.setReps : [];
+  const count = isValidSetCount(item.sets)
+    ? Number(item.sets)
+    : Math.min(MAX_LOGGED_SETS, savedReps.length || 3);
+
+  return Array.from({ length: count }, (_, index) =>
+    index < savedReps.length ? savedReps[index] : item.reps ?? MIN_REPS
+  );
+}
+
+export function updateExerciseSetCount(item, sets) {
+  const setReps = Array.isArray(item.setReps) ? item.setReps : getSetReps(item);
+  const next = { ...item, sets, setReps: [...setReps] };
+
+  // Retain hidden draft values while the count is edited; trim only when saved.
+  if (isValidSetCount(sets) && Number(sets) > setReps.length) {
+    next.setReps = getSetReps(next);
+  }
+  return next;
+}
+
+export function getExerciseSetError(item) {
+  if (!isValidSetCount(item.sets)) {
+    return `Enter a whole number of sets from 1 to ${MAX_LOGGED_SETS}.`;
+  }
+  if (!getSetReps(item).every(isValidRepCount)) {
+    return "Enter a whole number of reps (0 or more) for every set.";
+  }
+  return "";
+}
+
+export function normalizeExerciseSets(item) {
+  const error = getExerciseSetError(item);
+  if (error) throw new Error(error);
+  const setReps = getSetReps(item).map(Number);
+  // Keep a scalar baseline for older clients; per-set values remain authoritative.
+  return { sets: setReps.length, reps: Math.min(...setReps), setReps };
+}
+
+export function matchesSuggestion(item) {
+  if (!item.suggested || getExerciseSetError(item)) return false;
+  return Number(item.sets) === Number(item.suggested.sets) &&
+    safeNumber(item.weight) === safeNumber(item.suggested.weight) &&
+    getSetReps(item).every((reps) => Number(reps) === Number(item.suggested.reps));
+}
+
+export function formatExerciseSummary(item) {
+  if (Array.isArray(item.setReps)) {
+    const setReps = getSetReps(item);
+    return `${setReps.length} ${setReps.length === 1 ? "set" : "sets"} (${setReps.join(" / ")} reps) @ ${item.weight} lb`;
+  }
+  return `${item.sets} sets \u00d7 ${item.reps} reps @ ${item.weight} lb`;
+}
+
+function getProgressionReps(item, fallback) {
+  if (Array.isArray(item.setReps) && item.setReps.length > 0) {
+    return Math.min(...getSetReps(item).map((value) => isValidRepCount(value) ? Number(value) : 0));
+  }
+  return safeNumber(item.reps, fallback);
 }
 
 export function getRepRange(value) {
@@ -84,7 +157,7 @@ export function simpleProgression(
 export function buildRecommendation(entry, weightIncrement, repRange = DEFAULT_REP_RANGE) {
   const { minimum, maximum } = getRepRange(repRange);
   const sets = Math.min(MAX_SETS, Math.max(MIN_SETS, safeNumber(entry.sets, 3)));
-  const completedReps = Math.max(1, safeNumber(entry.reps, minimum));
+  const completedReps = Math.max(1, getProgressionReps(entry, minimum));
   const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
   const progression = simpleProgression(
     completedWeight,
@@ -126,7 +199,7 @@ export function buildDeloadRecommendation(entry, weightIncrement, repRange = DEF
     MIN_LOGGED_SETS,
     safeNumber(entry.sets, MIN_SETS)
   );
-  const completedReps = Math.max(1, safeNumber(entry.reps, minimum));
+  const completedReps = Math.max(1, getProgressionReps(entry, minimum));
   const completedWeight = Math.max(0, safeNumber(entry.weight, 0));
   const cappedReps = Math.min(maximum, completedReps);
   const reducedReps = Math.round(cappedReps * 0.75);

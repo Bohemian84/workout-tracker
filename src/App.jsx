@@ -28,15 +28,23 @@ import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 import { preserveScrollPosition } from "./scrollPosition";
 import {
   MIN_REPS,
-  MIN_LOGGED_SETS,
+  MAX_LOGGED_SETS,
   REP_RANGES,
   buildDeloadRecommendation,
   buildRecommendation,
+  formatExerciseSummary,
+  getExerciseSetError,
   getRepRange,
+  getSetReps,
+  isValidRepCount,
+  isValidSetCount,
   isProgressionEligible,
+  matchesSuggestion,
+  normalizeExerciseSets,
   normalizeRepRanges,
   orderRecommendationsByWorkout,
-  safeNumber
+  safeNumber,
+  updateExerciseSetCount
 } from "./workoutLogic";
 
 const STORAGE_KEY = "workout-tracker-v1";
@@ -190,6 +198,8 @@ function SortableDraftExercise({
     transition,
     isDragging
   } = useSortable({ id: item.id });
+  const setReps = getSetReps(item);
+  const setError = getExerciseSetError(item);
 
   return (
     <div
@@ -244,7 +254,7 @@ function SortableDraftExercise({
             <span style={styles.completedBadge}>Completed</span>
           </div>
           <div style={styles.completedExerciseSummary}>
-            {item.sets} sets × {item.reps} reps @ {item.weight} lb
+            {formatExerciseSummary(item)}
           </div>
         </div>
       ) : (
@@ -269,24 +279,16 @@ function SortableDraftExercise({
               <label style={styles.label} htmlFor={`sets-${item.id}`}>Actual Sets</label>
               <input
                 id={`sets-${item.id}`}
-                style={styles.input}
+                style={isValidSetCount(item.sets) ? styles.input : { ...styles.input, ...styles.invalidInput }}
                 type="number"
                 inputMode="numeric"
                 min="1"
+                max={MAX_LOGGED_SETS}
+                step="1"
+                aria-invalid={!isValidSetCount(item.sets)}
+                aria-describedby={setError ? `set-error-${item.id}` : undefined}
                 value={item.sets}
                 onChange={(e) => onUpdate(item.id, "sets", e.target.value)}
-              />
-            </div>
-            <div>
-              <label style={styles.label} htmlFor={`reps-${item.id}`}>Actual Reps</label>
-              <input
-                id={`reps-${item.id}`}
-                style={styles.input}
-                type="number"
-                inputMode="numeric"
-                min="1"
-                value={item.reps}
-                onChange={(e) => onUpdate(item.id, "reps", e.target.value)}
               />
             </div>
             <div>
@@ -303,14 +305,44 @@ function SortableDraftExercise({
               />
             </div>
           </div>
-          <div style={styles.actualSummary}>
-            Will save: {item.sets} sets × {item.reps} reps @ {item.weight} lb
+          <div role="group" aria-label={`${item.exercise} actual reps`} style={styles.setRepGrid}>
+            {setReps.map((repCount, index) => (
+              <div key={index}>
+                <label style={styles.label} htmlFor={`set-${item.id}-${index}`}>
+                  Set {index + 1} Reps
+                </label>
+                <input
+                  id={`set-${item.id}-${index}`}
+                  style={isValidRepCount(repCount) ? styles.input : { ...styles.input, ...styles.invalidInput }}
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  step="1"
+                  aria-invalid={!isValidRepCount(repCount)}
+                  aria-describedby={setError ? `set-error-${item.id}` : undefined}
+                  value={repCount ?? ""}
+                  onChange={(event) => {
+                    const next = [...setReps, ...(item.setReps || []).slice(setReps.length)];
+                    next[index] = event.target.value;
+                    onUpdate(item.id, "setReps", next);
+                  }}
+                />
+              </div>
+            ))}
           </div>
+          {setError ? (
+            <p id={`set-error-${item.id}`} style={styles.errorText} role="alert">{setError}</p>
+          ) : (
+            <div style={styles.actualSummary}>
+              Will save: {formatExerciseSummary({ ...item, setReps })}
+            </div>
+          )}
           <div style={styles.buttonRow}>
             <button
               type="button"
-              style={styles.completeButton}
+              style={setError ? { ...styles.completeButton, ...styles.disabledButton } : styles.completeButton}
               onClick={() => onComplete(item.id)}
+              disabled={Boolean(setError)}
             >
               Save Exercise
             </button>
@@ -352,9 +384,10 @@ export default function App() {
   const [reps, setReps] = useState(String(MIN_REPS));
   const [weight, setWeight] = useState("135");
 
-  const [draftExercises, setDraftExercises] = useState(
+  const [draftExercises, setDraftExercises] = useState(() =>
     (initialDraft?.exercises || []).map((item) => ({
       ...item,
+      setReps: Array.isArray(item.setReps) ? item.setReps : getSetReps(item),
       useForProgression:
         typeof item.useForProgression === "boolean"
           ? item.useForProgression
@@ -374,6 +407,7 @@ export default function App() {
   const lastCloudDataJson = useRef("");
   const repRangeDisabled = !authReady || Boolean(user && !cloudReady);
   const formExerciseName = exercise === "Custom Exercise" ? customExercise.trim() : exercise;
+  const newExerciseSetError = getExerciseSetError({ sets, reps });
   const recommendationsSectionRef = useRef(null);
   const dragSensors = useSensors(
     useSensor(MouseSensor, {
@@ -619,6 +653,7 @@ export default function App() {
           baseline: {
             sets: entry.sets,
             reps: entry.reps,
+            setReps: getSetReps(entry),
             weight: entry.weight
           },
           recommendation:
@@ -649,6 +684,7 @@ export default function App() {
     () => draftExercises.filter((item) => item.completed).length,
     [draftExercises]
   );
+  const hasInvalidExerciseSets = draftExercises.some((item) => getExerciseSetError(item));
   const completionSummary = `${completedExerciseCount} of ${draftExercises.length} ${
     draftExercises.length === 1 ? "exercise" : "exercises"
   } completed`;
@@ -674,14 +710,6 @@ export default function App() {
     }));
   }
 
-  function matchesSuggestion(item) {
-    if (!item.suggested) return false;
-
-    return ["sets", "reps", "weight"].every(
-      (field) => safeNumber(item[field]) === safeNumber(item.suggested[field])
-    );
-  }
-
   function changeSessionMode(nextMode) {
     if (nextMode === sessionMode) return;
 
@@ -696,6 +724,7 @@ export default function App() {
           ...(shouldUpdateTarget
             ? {
                 ...nextRecommendation,
+                setReps: getSetReps(nextRecommendation),
                 suggested: {
                   ...nextRecommendation,
                   mode: nextMode
@@ -729,10 +758,9 @@ export default function App() {
 
   function addExerciseToDraft() {
     const finalExercise = exercise === "Custom Exercise" ? customExercise.trim() : exercise;
-    if (!finalExercise) return;
+    if (!finalExercise || newExerciseSetError) return;
 
-    const parsedSets = Math.max(MIN_LOGGED_SETS, safeNumber(sets, 3));
-    const parsedReps = Math.max(1, safeNumber(reps, MIN_REPS));
+    const actualSets = normalizeExerciseSets({ sets, reps });
     const parsedWeight = Math.max(0, safeNumber(weight, 0));
 
     setDraftExercises((prev) => [
@@ -740,8 +768,7 @@ export default function App() {
       {
         id: crypto.randomUUID(),
         exercise: finalExercise,
-        sets: parsedSets,
-        reps: parsedReps,
+        ...actualSets,
         weight: parsedWeight,
         useForProgression: sessionMode !== "deload"
       }
@@ -756,7 +783,12 @@ export default function App() {
 
   function updateDraftExercise(id, field, value) {
     setDraftExercises((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        return field === "sets"
+          ? updateExerciseSetCount(item, value)
+          : { ...item, [field]: value };
+      })
     );
   }
 
@@ -776,8 +808,7 @@ export default function App() {
     return {
       id: item.id,
       exercise: item.exercise.trim() || "Exercise",
-      sets: Math.max(MIN_LOGGED_SETS, safeNumber(item.sets, 3)),
-      reps: Math.max(1, safeNumber(item.reps, MIN_REPS)),
+      ...normalizeExerciseSets(item),
       weight: Math.max(0, safeNumber(item.weight, 0)),
       repRange: getRepRange(exerciseRepRanges[item.exercise.trim()]).id,
       useForProgression:
@@ -790,7 +821,7 @@ export default function App() {
   function completeDraftExercise(id) {
     setDraftExercises((currentExercises) =>
       currentExercises.map((item) => {
-        if (item.id !== id) return item;
+        if (item.id !== id || getExerciseSetError(item)) return item;
 
         return {
           ...item,
@@ -810,7 +841,7 @@ export default function App() {
   }
 
   function saveSession() {
-    if (draftExercises.length === 0) return;
+    if (draftExercises.length === 0 || hasInvalidExerciseSets) return;
 
     const newSession = {
       id: crypto.randomUUID(),
@@ -861,6 +892,7 @@ export default function App() {
             exercise: item.exercise,
             sets: item.recommendation.sets,
             reps: item.recommendation.reps,
+            setReps: getSetReps(item.recommendation),
             weight: item.recommendation.weight,
             useForProgression: sessionMode !== "deload",
             suggested: {
@@ -890,6 +922,7 @@ export default function App() {
             exercise: item.exercise,
             sets: item.recommendation.sets,
             reps: item.recommendation.reps,
+            setReps: getSetReps(item.recommendation),
             weight: item.recommendation.weight,
             useForProgression: sessionMode !== "deload",
             suggested: {
@@ -936,7 +969,7 @@ export default function App() {
   }
 
   function exportData() {
-    const blob = new Blob([JSON.stringify({ version: 2, sessions, exerciseRepRanges }, null, 2)], {
+    const blob = new Blob([JSON.stringify({ version: 3, sessions, exerciseRepRanges }, null, 2)], {
       type: "application/json"
     });
     const url = URL.createObjectURL(blob);
@@ -1110,23 +1143,28 @@ export default function App() {
                 <label style={styles.label} htmlFor="new-exercise-sets">Sets</label>
                 <input
                   id="new-exercise-sets"
-                  style={styles.input}
+                  style={isValidSetCount(sets) ? styles.input : { ...styles.input, ...styles.invalidInput }}
                   type="number"
                   inputMode="numeric"
                   min="1"
+                  max={MAX_LOGGED_SETS}
+                  step="1"
+                  aria-invalid={!isValidSetCount(sets)}
                   value={sets}
                   onChange={(e) => setSets(e.target.value)}
                 />
               </div>
 
               <div>
-                <label style={styles.label} htmlFor="new-exercise-reps">Reps</label>
+                <label style={styles.label} htmlFor="new-exercise-reps">Reps per Set</label>
                 <input
                   id="new-exercise-reps"
-                  style={styles.input}
+                  style={isValidRepCount(reps) ? styles.input : { ...styles.input, ...styles.invalidInput }}
                   type="number"
                   inputMode="numeric"
-                  min="1"
+                  min="0"
+                  step="1"
+                  aria-invalid={!isValidRepCount(reps)}
                   value={reps}
                   onChange={(e) => setReps(e.target.value)}
                 />
@@ -1147,8 +1185,15 @@ export default function App() {
               </div>
             </div>
 
+            {newExerciseSetError && (
+              <p style={styles.errorText} role="alert">{newExerciseSetError}</p>
+            )}
             <div style={styles.buttonRow}>
-              <button style={styles.button} onClick={addExerciseToDraft}>
+              <button
+                style={newExerciseSetError ? { ...styles.button, ...styles.disabledButton } : styles.button}
+                onClick={addExerciseToDraft}
+                disabled={Boolean(newExerciseSetError)}
+              >
                 Add Exercise
               </button>
               <button style={styles.secondaryButton} onClick={resetExerciseForm}>
@@ -1213,10 +1258,18 @@ export default function App() {
             )}
 
             <div style={styles.buttonRow}>
-              <button style={styles.button} onClick={saveSession} disabled={draftExercises.length === 0}>
+              <button
+                style={draftExercises.length === 0 || hasInvalidExerciseSets
+                  ? { ...styles.button, ...styles.disabledButton } : styles.button}
+                onClick={saveSession}
+                disabled={draftExercises.length === 0 || hasInvalidExerciseSets}
+              >
                 Save Full Session
               </button>
             </div>
+            {hasInvalidExerciseSets && (
+              <p style={styles.errorText} role="alert">Check the highlighted sets and reps before saving the session.</p>
+            )}
           </div>
         </div>
 
@@ -1274,8 +1327,7 @@ export default function App() {
                   <div>From session: {item.sessionName}</div>
                   {sessionMode === "deload" && (
                     <div>
-                      Based on: {item.baseline.sets} sets × {item.baseline.reps} reps @{" "}
-                      {item.baseline.weight} lb
+                      Based on: {formatExerciseSummary(item.baseline)}
                     </div>
                   )}
                   <div style={{ marginTop: 8 }}>
@@ -1360,7 +1412,7 @@ export default function App() {
                         <div key={item.id} style={styles.smallCard}>
                           <strong>{item.exercise}</strong>
                           <div>
-                            {item.sets} sets × {item.reps} reps @ {item.weight} lb
+                            {formatExerciseSummary(item)}
                           </div>
                           {item.repRange && (
                             <div style={styles.rangeSummary}>
@@ -1519,6 +1571,13 @@ const styles = {
     borderRadius: 8,
     border: "1px solid #ccc",
     boxSizing: "border-box"
+  },
+  invalidInput: {
+    borderColor: "#b91c1c"
+  },
+  disabledButton: {
+    opacity: 0.55,
+    cursor: "not-allowed"
   },
   buttonRow: {
     display: "flex",
@@ -1706,7 +1765,14 @@ const styles = {
     marginTop: 10
   },
   actualSummary: {
-    fontWeight: 600
+    fontWeight: 600,
+    overflowWrap: "anywhere"
+  },
+  setRepGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(110px, 100%), 1fr))",
+    gap: 12,
+    marginBlock: 12
   },
   completionStatus: {
     display: "flex",
