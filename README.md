@@ -19,7 +19,17 @@ This app saves workout history locally when signed out and can sync history betw
 - Deloads retain 90% weight (rounded down to an available increment unless that cuts more than 25%), half the sets rounded up, and 75% of the lowest completed set's reps rounded to a whole rep. Reps are capped at the selected range's maximum before reducing them. This usually means 6-11 reps for 8-14 training or 8-15 reps for 10-20 training; lower actual reps remain lower. Deloads remain excluded from progression by default.
 - Existing history without range settings remains valid and uses the new default for future recommendations. Export includes history and range preferences; Import accepts both the new backup format and older history-only arrays.
 
-Run `npm test` to check per-set recording, ordering, scrolling, and recommendation math, and `npm run build` to verify the production build.
+## Optional warm-up sets
+
+- Each exercise in Current Session has an optional warm-up plan, independent of its working sets. Enter an easy weight you could comfortably lift for 20 or more reps; the app does not estimate a 20RM from working weight.
+- Generate Warm-ups starts with 10 reps at that easy weight. Intermediate sets default to 6 reps: one set at working weights up to and including 50 lb, two above 50 through 200 lb, and three above 200 through 400 lb. Each further 200 lb band adds one intermediate set. The count is editable, up to 18 intermediate sets (20 warm-up sets total).
+- The first intermediate target is halfway between the easy and working weights; additional intermediate targets are evenly spaced from that midpoint toward, but below, the working weight. Intermediate targets round down to the selected equipment weight step, without going below the easy weight. Small weight gaps can produce repeated loads; all generated weights and reps remain editable.
+- The final potentiation set defaults to 2 reps at exactly the working weight. The optional 110% setting rounds down to the equipment step, never below the working weight. It is not enabled automatically.
+- Check off individual warm-up sets as completed. Editing a set clears its completion checkmark. Saving an exercise or full session preserves the checkmarks without marking unperformed warm-ups as completed. History separates completed and uncompleted warm-ups from the working-set summary.
+- Working-weight or plan-setting changes never overwrite existing warm-up entries. Regenerate Warm-ups explicitly replaces the plan after confirmation; it does not change working sets. Turning warm-ups off retains the draft entries until the exercise/session is saved.
+- Warm-ups persist with draft recovery, exercise saving/editing, Firebase history sync, and export/import. They are stored separately and never count toward normal or deload progression. Existing history remains unchanged, and older backups are still accepted.
+
+Run `npm test` to check warm-ups, per-set recording, ordering, scrolling, and recommendation math, and `npm run build` to verify the production build.
 
 ## Firebase setup
 

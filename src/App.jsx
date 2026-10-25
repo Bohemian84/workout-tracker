@@ -26,6 +26,8 @@ import {
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
 import { preserveScrollPosition } from "./scrollPosition";
+import WarmupSets, { WarmupSummary } from "./WarmupSets";
+import { getWarmupError, normalizeWarmup } from "./warmupLogic";
 import {
   MIN_REPS,
   MAX_LOGGED_SETS,
@@ -199,7 +201,7 @@ function SortableDraftExercise({
     isDragging
   } = useSortable({ id: item.id });
   const setReps = getSetReps(item);
-  const setError = getExerciseSetError(item);
+  const setError = getExerciseSetError(item) || getWarmupError(item.warmup);
 
   return (
     <div
@@ -256,6 +258,7 @@ function SortableDraftExercise({
           <div style={styles.completedExerciseSummary}>
             {formatExerciseSummary(item)}
           </div>
+          <WarmupSummary warmup={item.warmup} styles={styles} />
         </div>
       ) : (
         <div style={styles.draftDetails}>
@@ -273,6 +276,13 @@ function SortableDraftExercise({
             </div>
           )}
 
+          <WarmupSets
+            item={item}
+            defaultIncrement={getExerciseMeta(item.exercise).increment}
+            onChange={(warmup) => onUpdate(item.id, "warmup", warmup)}
+            styles={styles}
+          />
+          {item.warmup?.enabled && <h4 style={styles.flushHeading}>Working Sets</h4>}
           <div style={styles.compactGrid}>
             <div>
               <label style={styles.label} htmlFor={`sets-${item.id}`}>Actual Sets</label>
@@ -683,7 +693,9 @@ export default function App() {
     () => draftExercises.filter((item) => item.completed).length,
     [draftExercises]
   );
-  const hasInvalidExerciseSets = draftExercises.some((item) => getExerciseSetError(item));
+  const hasInvalidExerciseSets = draftExercises.some((item) =>
+    getExerciseSetError(item) || getWarmupError(item.warmup)
+  );
   const completionSummary = `${completedExerciseCount} of ${draftExercises.length} ${
     draftExercises.length === 1 ? "exercise" : "exercises"
   } completed`;
@@ -808,6 +820,7 @@ export default function App() {
       id: item.id,
       exercise: item.exercise.trim() || "Exercise",
       ...normalizeExerciseSets(item),
+      warmup: normalizeWarmup(item.warmup),
       weight: Math.max(0, safeNumber(item.weight, 0)),
       repRange: getRepRange(exerciseRepRanges[item.exercise.trim()]).id,
       useForProgression:
@@ -820,7 +833,7 @@ export default function App() {
   function completeDraftExercise(id) {
     setDraftExercises((currentExercises) =>
       currentExercises.map((item) => {
-        if (item.id !== id || getExerciseSetError(item)) return item;
+        if (item.id !== id || getExerciseSetError(item) || getWarmupError(item.warmup)) return item;
 
         return {
           ...item,
@@ -970,7 +983,7 @@ export default function App() {
   }
 
   function exportData() {
-    const blob = new Blob([JSON.stringify({ version: 3, sessions, exerciseRepRanges }, null, 2)], {
+    const blob = new Blob([JSON.stringify({ version: 4, sessions, exerciseRepRanges }, null, 2)], {
       type: "application/json"
     });
     const url = URL.createObjectURL(blob);
@@ -1269,7 +1282,7 @@ export default function App() {
               </button>
             </div>
             {hasInvalidExerciseSets && (
-              <p style={styles.errorText} role="alert">Check the highlighted sets and reps before saving the session.</p>
+              <p style={styles.errorText} role="alert">Check the highlighted working sets and warm-up entries before saving the session.</p>
             )}
           </div>
         </div>
@@ -1414,6 +1427,7 @@ export default function App() {
                           <div>
                             {formatExerciseSummary(item)}
                           </div>
+                          <WarmupSummary warmup={item.warmup} styles={styles} />
                           {item.repRange && (
                             <div style={styles.rangeSummary}>
                               Progression range: {getRepRange(item.repRange).id} reps
