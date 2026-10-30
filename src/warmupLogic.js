@@ -18,20 +18,14 @@ export function getIntermediateSetCount(workingWeight) {
 export function createWarmup(weightIncrement = 5) {
   return {
     enabled: false,
-    easyWeight: "",
     weightIncrement,
     intermediateSets: null,
-    potentiationPercent: 100,
     sets: []
   };
 }
 
 export function getWarmupPlanError(workingWeight, settings) {
   if (!isValidWarmupWeight(workingWeight)) return "Enter a working weight of 0 lb or more.";
-  if (!isValidWarmupWeight(settings.easyWeight)) return "Enter an easy warm-up weight of 0 lb or more.";
-  if (Number(settings.easyWeight) > Number(workingWeight)) {
-    return "The easy warm-up weight cannot exceed the working weight.";
-  }
   if (!isValidWarmupWeight(settings.weightIncrement) || Number(settings.weightIncrement) < 0.01) {
     return "Enter a weight step of at least 0.01 lb.";
   }
@@ -39,10 +33,12 @@ export function getWarmupPlanError(workingWeight, settings) {
   if (!isValidRepCount(count) || Number(count) < 1 || Number(count) > MAX_WARMUP_SETS - 2) {
     return `Enter 1 to ${MAX_WARMUP_SETS - 2} intermediate sets.`;
   }
-  if (![100, 110].includes(Number(settings.potentiationPercent))) {
-    return "Choose 100% or 110% for the final warm-up weight.";
-  }
   return "";
+}
+
+function roundUpToStep(weight, increment) {
+  const steps = weight / increment;
+  return Math.round(Math.ceil(steps - Number.EPSILON * Math.abs(steps)) * increment * 100) / 100;
 }
 
 function roundDownToStep(weight, increment) {
@@ -54,8 +50,9 @@ export function buildWarmupSets(workingWeight, settings) {
   if (error) throw new Error(error);
 
   const weight = Number(workingWeight);
-  const easyWeight = Number(settings.easyWeight);
   const increment = Number(settings.weightIncrement);
+  // A coarse equipment step must not make the easy set heavier than the working set.
+  const easyWeight = Math.min(weight, roundUpToStep(weight * 0.35, increment));
   const count = Number(settings.intermediateSets ?? getIntermediateSetCount(weight));
   const midpoint = (easyWeight + weight) / 2;
   const sets = [{ id: "easy", kind: "easy", weight: easyWeight, reps: 10, completed: false }];
@@ -72,10 +69,7 @@ export function buildWarmupSets(workingWeight, settings) {
     });
   }
 
-  const potentiationWeight = Number(settings.potentiationPercent) === 110
-    ? Math.max(weight, roundDownToStep(weight * 1.1, increment))
-    : weight;
-  sets.push({ id: "potentiation", kind: "potentiation", weight: potentiationWeight, reps: 2, completed: false });
+  sets.push({ id: "potentiation", kind: "potentiation", weight, reps: 2, completed: false });
   return sets;
 }
 

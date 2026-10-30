@@ -71,19 +71,6 @@ export default function WarmupSets({ item, defaultIncrement, onChange, styles })
           </summary>
           <div style={styles.setRepGrid}>
             <div>
-              <label style={styles.label} htmlFor={`warmup-easy-${item.id}`}>Easy weight (20+ reps), lb</label>
-              <input
-                id={`warmup-easy-${item.id}`}
-                style={styles.input}
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="any"
-                value={warmup.easyWeight}
-                onChange={(event) => updateSettings("easyWeight", event.target.value)}
-              />
-            </div>
-            <div>
               <label style={styles.label} htmlFor={`warmup-increment-${item.id}`}>Weight step (lb)</label>
               <input
                 id={`warmup-increment-${item.id}`}
@@ -111,16 +98,6 @@ export default function WarmupSets({ item, defaultIncrement, onChange, styles })
               />
             </div>
           </div>
-          <label style={styles.label} htmlFor={`warmup-final-${item.id}`}>Final warm-up weight</label>
-          <select
-            id={`warmup-final-${item.id}`}
-            style={styles.input}
-            value={warmup.potentiationPercent}
-            onChange={(event) => updateSettings("potentiationPercent", Number(event.target.value))}
-          >
-            <option value={100}>Working weight (100%)</option>
-            <option value={110}>Working weight +10% (110%)</option>
-          </select>
           {planError && <p style={styles.errorText} role="alert">{planError}</p>}
           <div style={styles.buttonRow}>
             <button
