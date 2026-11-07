@@ -1,6 +1,7 @@
 import { isValidRepCount } from "./workoutLogic.js";
 
 export const MAX_WARMUP_SETS = 20;
+export const WARMUP_WEIGHT_INCREMENT = 5;
 
 export function isValidWarmupWeight(value) {
   return (typeof value === "number" || typeof value === "string") &&
@@ -15,10 +16,10 @@ export function getIntermediateSetCount(workingWeight) {
   return Math.min(MAX_WARMUP_SETS - 2, Math.ceil(Number(workingWeight) / 200) + 1);
 }
 
-export function createWarmup(weightIncrement = 5) {
+export function createWarmup() {
   return {
     enabled: false,
-    weightIncrement,
+    weightIncrement: WARMUP_WEIGHT_INCREMENT,
     intermediateSets: null,
     sets: []
   };
@@ -26,9 +27,6 @@ export function createWarmup(weightIncrement = 5) {
 
 export function getWarmupPlanError(workingWeight, settings) {
   if (!isValidWarmupWeight(workingWeight)) return "Enter a working weight of 0 lb or more.";
-  if (!isValidWarmupWeight(settings.weightIncrement) || Number(settings.weightIncrement) < 0.01) {
-    return "Enter a weight step of at least 0.01 lb.";
-  }
   const count = settings.intermediateSets ?? getIntermediateSetCount(workingWeight);
   if (!isValidRepCount(count) || Number(count) < 1 || Number(count) > MAX_WARMUP_SETS - 2) {
     return `Enter 1 to ${MAX_WARMUP_SETS - 2} intermediate sets.`;
@@ -50,7 +48,7 @@ export function buildWarmupSets(workingWeight, settings) {
   if (error) throw new Error(error);
 
   const weight = Number(workingWeight);
-  const increment = Number(settings.weightIncrement);
+  const increment = WARMUP_WEIGHT_INCREMENT;
   // A coarse equipment step must not make the easy set heavier than the working set.
   const easyWeight = Math.min(weight, roundUpToStep(weight * 0.35, increment));
   const count = Number(settings.intermediateSets ?? getIntermediateSetCount(weight));
@@ -71,6 +69,23 @@ export function buildWarmupSets(workingWeight, settings) {
 
   sets.push({ id: "potentiation", kind: "potentiation", weight, reps: 2, completed: false });
   return sets;
+}
+
+export function generateWarmup(workingWeight, settings = createWarmup()) {
+  return {
+    ...settings,
+    enabled: true,
+    weightIncrement: WARMUP_WEIGHT_INCREMENT,
+    generatedForWeight: Number(workingWeight),
+    sets: buildWarmupSets(workingWeight, settings)
+  };
+}
+
+export function setWarmupEnabled(warmup, enabled, workingWeight) {
+  const next = { ...(warmup || createWarmup()), enabled };
+  // Toggling an existing plan must preserve actuals, including unfinished edits.
+  if (!enabled || (Array.isArray(next.sets) && next.sets.length) || getWarmupPlanError(workingWeight, next)) return next;
+  return generateWarmup(workingWeight, next);
 }
 
 export function getWarmupSetError(set) {

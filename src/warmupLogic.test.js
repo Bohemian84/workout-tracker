@@ -3,26 +3,30 @@ import test from "node:test";
 import { buildDeloadRecommendation, buildRecommendation, normalizeExerciseSets } from "./workoutLogic.js";
 import {
   MAX_WARMUP_SETS,
+  WARMUP_WEIGHT_INCREMENT,
   buildWarmupSets,
   createWarmup,
+  generateWarmup,
   getIntermediateSetCount,
   getWarmupError,
   getWarmupPlanError,
   getWarmupSetError,
   getWarmupSetLabel,
   normalizeWarmup,
+  setWarmupEnabled,
   updateWarmupSet
 } from "./warmupLogic.js";
 
-const settings = (overrides = {}) => ({ ...createWarmup(5), enabled: true, ...overrides });
+const settings = (overrides = {}) => ({ ...createWarmup(), enabled: true, ...overrides });
 const plan = (workingWeight = 100, overrides = {}) => {
   const config = settings(overrides);
   return { ...config, generatedForWeight: workingWeight, sets: buildWarmupSets(workingWeight, config) };
 };
 
 test("warm-ups are optional and can generate without a manually entered starting weight", () => {
-  assert.deepEqual(createWarmup(2.5), {
-    enabled: false, weightIncrement: 2.5, intermediateSets: null, sets: []
+  assert.equal(WARMUP_WEIGHT_INCREMENT, 5);
+  assert.deepEqual(createWarmup(), {
+    enabled: false, weightIncrement: 5, intermediateSets: null, sets: []
   });
   assert.equal(getWarmupError(undefined), "");
   assert.equal(normalizeWarmup(undefined), null);
@@ -30,14 +34,13 @@ test("warm-ups are optional and can generate without a manually entered starting
   assert.equal(buildWarmupSets(100, createWarmup())[0].weight, 35);
 });
 
-test("the easy set uses 35 percent of working weight rounded up to the equipment step", () => {
-  for (const [workingWeight, weightIncrement, expected] of [
-    [100, 5, 35], [135, 5, 50], [150, 5, 55], [50, 5, 20],
-    [120, 2.5, 42.5], [135, 2.5, 47.5], [100, 10, 40],
-    [10.1, 0.1, 3.6], [10, 0.1, 3.5], [10, 0.01, 3.5], [20, 0.05, 7]
+test("the easy set uses 35 percent of working weight rounded up to 5 lb", () => {
+  for (const [workingWeight, expected] of [
+    [100, 35], [135, 50], [150, 55], [50, 20], [120, 45],
+    [10.1, 5], [10, 5], [20, 10], [99.99, 35], [100.01, 40]
   ]) {
-    const first = buildWarmupSets(workingWeight, settings({ weightIncrement }))[0];
-    assert.equal(first.weight, expected, `${workingWeight} lb with a ${weightIncrement} lb step`);
+    const first = buildWarmupSets(workingWeight, settings())[0];
+    assert.equal(first.weight, expected, `${workingWeight} lb working weight`);
     assert.equal(first.reps, 10);
     assert.equal(first.completed, false);
   }
@@ -83,16 +86,16 @@ test("legacy easy-weight and final-percentage settings cannot change newly gener
   }
 });
 
-test("equipment steps round the easy set up and intermediate sets down", () => {
-  const fractional = buildWarmupSets(120, settings({ weightIncrement: 2.5 }));
-  assert.deepEqual(fractional.map((set) => set.weight), [42.5, 80, 100, 120]);
+test("fixed 5 lb steps round the easy set up and intermediate sets down", () => {
+  const generated = buildWarmupSets(120, settings());
+  assert.deepEqual(generated.map((set) => set.weight), [45, 80, 100, 120]);
   assert.deepEqual(buildWarmupSets(10, settings()).map((set) => set.weight), [5, 5, 10]);
 });
 
 test("bodyweight and very light exercises do not acquire negative or heavier warm-up loads", () => {
   assert.deepEqual(buildWarmupSets(0, settings()).map((set) => set.weight), [0, 0, 0]);
   assert.deepEqual(buildWarmupSets(0.5, settings()).map((set) => set.weight), [0.5, 0.5, 0.5]);
-  assert.deepEqual(buildWarmupSets(10, settings({ weightIncrement: 20 })).map((set) => set.weight), [10, 10, 10]);
+  assert.deepEqual(buildWarmupSets(2.5, settings()).map((set) => set.weight), [2.5, 2.5, 2.5]);
 });
 
 test("the intermediate count can be edited while automatic counts follow working weight", () => {
@@ -111,10 +114,15 @@ test("invalid or missing weights cannot generate a plan", () => {
   }
 });
 
-test("invalid increments and fractional counts are rejected", () => {
-  for (const weightIncrement of ["", 0, -5, 0.001, "bad", Infinity, true]) {
-    assert.throws(() => buildWarmupSets(100, settings({ weightIncrement })));
+test("legacy increments are ignored, including invalid values from unfinished drafts", () => {
+  for (const weightIncrement of [2.5, 10, 20, "2.5", "", 0, -5, 0.001, "bad", Infinity, true, null, undefined]) {
+    const legacy = settings({ weightIncrement });
+    assert.equal(getWarmupPlanError(120, legacy), "");
+    assert.deepEqual(buildWarmupSets(120, legacy).map((set) => set.weight), [45, 80, 100, 120]);
   }
+});
+
+test("invalid and fractional intermediate counts are rejected", () => {
   for (const intermediateSets of ["", 0, -1, 1.5, Infinity, true, MAX_WARMUP_SETS - 1]) {
     assert.throws(() => buildWarmupSets(100, settings({ intermediateSets })));
   }
@@ -129,13 +137,13 @@ test("warm-up generation is bounded and does not mutate its settings", () => {
 
 test("generated weights stay in order between the rounded 35 percent target and working weight", () => {
   for (const workingWeight of [0, 0.5, 1, 49.5, 50, 51, 200, 201, 400, 401, 650, 1000]) {
-    for (const weightIncrement of [0.01, 0.1, 0.5, 2.5, 5, 20, 1000]) {
-      const generated = buildWarmupSets(workingWeight, settings({ weightIncrement }));
+    for (const legacyIncrement of [0.01, 0.1, 0.5, 2.5, 5, 20, 1000]) {
+      const generated = buildWarmupSets(workingWeight, settings({ weightIncrement: legacyIncrement }));
       assert.equal(generated.length, getIntermediateSetCount(workingWeight) + 2);
       assert.ok(generated[0].weight >= workingWeight * 0.35 - 1e-9);
-      assert.ok(generated[0].weight < workingWeight * 0.35 + weightIncrement + 1e-9);
+      assert.ok(generated[0].weight < workingWeight * 0.35 + 5 + 1e-9);
       if (generated[0].weight < workingWeight) {
-        const steps = generated[0].weight / weightIncrement;
+        const steps = generated[0].weight / 5;
         assert.ok(Math.abs(steps - Math.round(steps)) < 1e-9);
       }
       for (let index = 1; index < generated.length; index += 1) {
@@ -145,6 +153,104 @@ test("generated weights stay in order between the rounded 35 percent target and 
       assert.ok(generated.every((set) => set.weight <= workingWeight));
       assert.equal(generated.at(-1).weight, workingWeight);
     }
+  }
+});
+
+test("checking warm-ups creates a complete valid plan in a single update", () => {
+  const before = Object.freeze(createWarmup());
+  const generated = setWarmupEnabled(before, true, "135");
+  assert.deepEqual(generated, generateWarmup(135));
+  assert.equal(generated.enabled, true);
+  assert.equal(generated.weightIncrement, 5);
+  assert.equal(generated.generatedForWeight, 135);
+  assert.deepEqual(generated.sets.map((set) => set.weight), [50, 90, 110, 135]);
+  assert.deepEqual(generated.sets.map((set) => set.reps), [10, 6, 6, 2]);
+  assert.ok(generated.sets.every((set) => !set.completed));
+  assert.equal(getWarmupError(generated), "");
+  assert.deepEqual(normalizeWarmup(generated), generated);
+  assert.deepEqual(before, createWarmup());
+});
+
+test("checking warm-ups supports exercises without previous warm-up data and zero weight", () => {
+  for (const previous of [undefined, null, createWarmup()]) {
+    assert.deepEqual(setWarmupEnabled(previous, true, 0), generateWarmup(0));
+    assert.deepEqual(setWarmupEnabled(previous, false, 100), createWarmup());
+  }
+});
+
+test("automatic generation respects a saved intermediate count but ignores its old increment", () => {
+  const previous = { ...createWarmup(), weightIncrement: 2.5, intermediateSets: "3" };
+  const generated = setWarmupEnabled(previous, true, 120);
+  assert.equal(generated.weightIncrement, 5);
+  assert.equal(generated.intermediateSets, "3");
+  assert.equal(generated.sets.length, 5);
+  assert.equal(generated.sets[0].weight, 45);
+  assert.equal(previous.weightIncrement, 2.5);
+  assert.deepEqual(previous.sets, []);
+});
+
+test("unchecking and rechecking preserves edited sets, completion and their original working weight", () => {
+  let original = generateWarmup(100);
+  original = updateWarmupSet(original, "easy", "weight", "32.5");
+  original = updateWarmupSet(original, "easy", "reps", "8");
+  original = updateWarmupSet(original, "easy", "completed", true);
+  const disabled = setWarmupEnabled(original, false, 100);
+  const restored = setWarmupEnabled(disabled, true, 135);
+  assert.equal(disabled.enabled, false);
+  assert.equal(normalizeWarmup(disabled), null);
+  assert.deepEqual(restored, original);
+  assert.equal(restored.sets, original.sets);
+  assert.equal(restored.sets[0].completed, true);
+  assert.equal(restored.generatedForWeight, 100);
+});
+
+test("rechecking does not overwrite unfinished edits or reject a preserved plan because of current weight", () => {
+  const original = updateWarmupSet(generateWarmup(100), "easy", "reps", "");
+  const restored = setWarmupEnabled(setWarmupEnabled(original, false, 100), true, "");
+  assert.deepEqual(restored, original);
+  assert.ok(getWarmupError(restored));
+});
+
+test("an invalid working weight or count prevents auto-generation without throwing or inventing values", () => {
+  for (const weight of ["", " ", -1, Infinity, 1e308, NaN, null, undefined, true]) {
+    const next = setWarmupEnabled(createWarmup(), true, weight);
+    assert.equal(next.enabled, true);
+    assert.deepEqual(next.sets, []);
+    assert.equal(next.generatedForWeight, undefined);
+    assert.ok(getWarmupPlanError(weight, next));
+    assert.ok(getWarmupError(next));
+    assert.deepEqual(generateWarmup(100, next), generateWarmup(100));
+  }
+  const invalidCount = { ...createWarmup(), intermediateSets: "" };
+  const next = setWarmupEnabled(invalidCount, true, 100);
+  assert.deepEqual(next.sets, []);
+  assert.ok(getWarmupPlanError(100, next));
+  const corrected = { ...next, intermediateSets: 2 };
+  assert.equal(setWarmupEnabled(corrected, true, 100).sets.length, 4);
+});
+
+test("new and regenerated plans always use 5 lb without migrating old logged loads", () => {
+  const legacy = plan(120, { weightIncrement: 2.5 });
+  legacy.sets[0] = { ...legacy.sets[0], weight: 42.5, completed: true };
+  const restored = setWarmupEnabled({ ...legacy, enabled: false }, true, 120);
+  assert.deepEqual(restored, legacy);
+  assert.deepEqual(normalizeWarmup(restored), legacy);
+  const regenerated = generateWarmup(120, restored);
+  assert.equal(regenerated.weightIncrement, 5);
+  assert.equal(regenerated.sets[0].weight, 45);
+  assert.ok(regenerated.sets.every((set) => !set.completed));
+  assert.equal(restored.sets[0].weight, 42.5);
+  assert.equal(restored.sets[0].completed, true);
+});
+
+test("warm-up increments do not change exercise-specific working-weight progression", () => {
+  for (const increment of [2.5, 5, 10]) {
+    const exercise = { weight: 100, sets: 3, setReps: [14, 14, 14] };
+    const warmup = setWarmupEnabled({ ...createWarmup(), weightIncrement: increment }, true, 100);
+    const recommended = buildRecommendation({ ...exercise, warmup }, increment);
+    assert.equal(warmup.weightIncrement, 5);
+    assert.equal(recommended.weight, 100 + increment);
+    assert.deepEqual(recommended, buildRecommendation(exercise, increment));
   }
 });
 

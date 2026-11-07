@@ -2,14 +2,15 @@ import React, { useState } from "react";
 import { isValidRepCount } from "./workoutLogic";
 import {
   MAX_WARMUP_SETS,
-  buildWarmupSets,
   createWarmup,
+  generateWarmup,
   getIntermediateSetCount,
   getWarmupError,
   getWarmupPlanError,
   getWarmupSetError,
   getWarmupSetLabel,
   isValidWarmupWeight,
+  setWarmupEnabled,
   updateWarmupSet
 } from "./warmupLogic";
 
@@ -32,9 +33,9 @@ export function WarmupSummary({ warmup, styles }) {
   );
 }
 
-export default function WarmupSets({ item, defaultIncrement, onChange, styles }) {
+export default function WarmupSets({ item, onChange, styles }) {
   const [expanded, setExpanded] = useState(true);
-  const warmup = item.warmup || createWarmup(defaultIncrement);
+  const warmup = item.warmup || createWarmup();
   const sets = Array.isArray(warmup.sets) ? warmup.sets : [];
   const planError = getWarmupPlanError(item.weight, warmup);
   const savedSetError = sets.length ? getWarmupError(warmup) : "";
@@ -46,11 +47,7 @@ export default function WarmupSets({ item, defaultIncrement, onChange, styles })
   function generate() {
     if (planError) return;
     if (sets.length && !window.confirm("Replace this exercise's warm-up sets? Any edited values and completion checkmarks will be reset. Working sets will stay unchanged.")) return;
-    onChange({
-      ...warmup,
-      generatedForWeight: Number(item.weight),
-      sets: buildWarmupSets(item.weight, warmup)
-    });
+    onChange(generateWarmup(item.weight, warmup));
   }
 
   return (
@@ -60,7 +57,11 @@ export default function WarmupSets({ item, defaultIncrement, onChange, styles })
           type="checkbox"
           style={styles.progressionCheckbox}
           checked={warmup.enabled === true}
-          onChange={(event) => updateSettings("enabled", event.target.checked)}
+          onChange={(event) => {
+            const enabled = event.target.checked;
+            if (enabled) setExpanded(true);
+            onChange(setWarmupEnabled(warmup, enabled, item.weight));
+          }}
         />
         <span>Include warm-up sets</span>
       </label>
@@ -70,19 +71,6 @@ export default function WarmupSets({ item, defaultIncrement, onChange, styles })
             {sets.length ? `Warm-ups: ${completed} of ${sets.length} completed` : "Warm-up plan"}
           </summary>
           <div style={styles.setRepGrid}>
-            <div>
-              <label style={styles.label} htmlFor={`warmup-increment-${item.id}`}>Weight step (lb)</label>
-              <input
-                id={`warmup-increment-${item.id}`}
-                style={styles.input}
-                type="number"
-                inputMode="decimal"
-                min="0.01"
-                step="any"
-                value={warmup.weightIncrement}
-                onChange={(event) => updateSettings("weightIncrement", event.target.value)}
-              />
-            </div>
             <div>
               <label style={styles.label} htmlFor={`warmup-count-${item.id}`}>Intermediate sets</label>
               <input

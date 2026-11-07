@@ -278,7 +278,6 @@ function SortableDraftExercise({
 
           <WarmupSets
             item={item}
-            defaultIncrement={getExerciseMeta(item.exercise).increment}
             onChange={(warmup) => onUpdate(item.id, "warmup", warmup)}
             styles={styles}
           />
