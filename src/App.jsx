@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -25,7 +25,8 @@ import {
 } from "firebase/auth";
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db, firebaseConfigured, googleProvider } from "./firebase";
-import { preserveScrollPosition } from "./scrollPosition";
+import { preserveInputPosition, preserveScrollPosition } from "./scrollPosition";
+import WorkoutHistory from "./WorkoutHistory";
 import WarmupSets, { WarmupSummary } from "./WarmupSets";
 import { getWarmupError, normalizeWarmup } from "./warmupLogic";
 import {
@@ -338,13 +339,13 @@ function SortableDraftExercise({
               </div>
             ))}
           </div>
-          {setError ? (
-            <p id={`set-error-${item.id}`} style={styles.errorText} role="alert">{setError}</p>
-          ) : (
-            <div style={styles.actualSummary}>
-              Will save: {formatExerciseSummary({ ...item, setReps })}
-            </div>
-          )}
+          <div
+            id={`set-error-${item.id}`}
+            style={{ ...styles.setFeedback, color: setError ? "#b91c1c" : "inherit" }}
+            aria-live="polite"
+          >
+            {setError || `Will save: ${formatExerciseSummary({ ...item, setReps })}`}
+          </div>
           <div style={styles.buttonRow}>
             <button
               type="button"
@@ -406,7 +407,6 @@ export default function App() {
   const [hiddenRecommendations, setHiddenRecommendations] = useState(loadHiddenRecommendations);
   const [exerciseRepRanges, setExerciseRepRanges] = useState(() => loadRepRanges());
   const [showRecommendations, setShowRecommendations] = useState(true);
-  const [showHistory, setShowHistory] = useState(true);
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(!firebaseConfigured);
   const [cloudReady, setCloudReady] = useState(false);
@@ -871,9 +871,9 @@ export default function App() {
     resetExerciseForm();
   }
 
-  function deleteSession(id) {
+  const deleteSession = useCallback((id) => {
     setSessions((prev) => prev.filter((session) => session.id !== id));
-  }
+  }, []);
 
   function hideRecommendation(item) {
     setHiddenRecommendations((prev) => ({
@@ -981,7 +981,7 @@ export default function App() {
     }
   }
 
-  function exportData() {
+  const exportData = useCallback(() => {
     const blob = new Blob([JSON.stringify({ version: 4, sessions, exerciseRepRanges }, null, 2)], {
       type: "application/json"
     });
@@ -991,9 +991,9 @@ export default function App() {
     a.download = "workout-sessions.json";
     a.click();
     URL.revokeObjectURL(url);
-  }
+  }, [sessions, exerciseRepRanges]);
 
-  function importData(event) {
+  const importData = useCallback((event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -1012,7 +1012,7 @@ export default function App() {
       }
     };
     reader.readAsText(file);
-  }
+  }, []);
 
   return (
     <div style={styles.page}>
@@ -1050,7 +1050,7 @@ export default function App() {
           </div>
         </div>
 
-        <div style={styles.section}>
+        <div style={styles.section} onChangeCapture={(event) => preserveInputPosition(event.target)}>
           <h2>Log Session</h2>
 
           <div style={styles.modeField}>
@@ -1215,7 +1215,7 @@ export default function App() {
             </div>
           </div>
 
-          <div style={styles.card}>
+          <div id="current-session" style={{ ...styles.card, scrollMarginTop: 20 }}>
             <div style={styles.currentSessionHeading}>
               <h3 style={styles.flushHeading}>Current Session</h3>
               {sessionMode === "deload" && <span style={styles.deloadBadge}>Deload</span>}
@@ -1280,9 +1280,6 @@ export default function App() {
                 Save Full Session
               </button>
             </div>
-            {hasInvalidExerciseSets && (
-              <p style={styles.errorText} role="alert">Check the highlighted working sets and warm-up entries before saving the session.</p>
-            )}
           </div>
         </div>
 
@@ -1373,84 +1370,14 @@ export default function App() {
           )}
         </div>
 
-        <div style={styles.section}>
-          <div style={styles.headerRow}>
-            <h2>History</h2>
-            <div style={styles.buttonRow}>
-              <button style={styles.secondaryButton} onClick={() => setShowHistory((show) => !show)}>
-                {showHistory ? "Minimize" : "Show"}
-              </button>
-              <button style={styles.secondaryButton} onClick={exportData}>
-                Export
-              </button>
-              <label style={styles.uploadLabel}>
-                Import
-                <input
-                  type="file"
-                  accept="application/json"
-                  onChange={importData}
-                  style={{ display: "none" }}
-                />
-              </label>
-            </div>
-          </div>
-
-          {showHistory && (
-            sortedSessions.length === 0 ? (
-              <p>No saved sessions yet.</p>
-            ) : (
-              sortedSessions.map((session) => (
-                <div key={session.id} style={styles.card}>
-                  <div style={styles.headerRow}>
-                    <div>
-                      <div style={styles.historyTitleRow}>
-                        <strong>{session.sessionName}</strong>
-                        {session.workoutMode === "deload" && (
-                          <span style={styles.deloadBadge}>Deload</span>
-                        )}
-                      </div>
-                      <div>{formatDate(session.date)}</div>
-                    </div>
-                    <button style={styles.deleteButton} onClick={() => deleteSession(session.id)}>
-                      Delete
-                    </button>
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    {session.exercises.map((item) => {
-                      const usedForProgression = isProgressionEligible(session, item);
-
-                      return (
-                        <div key={item.id} style={styles.smallCard}>
-                          <strong>{item.exercise}</strong>
-                          <div>
-                            {formatExerciseSummary(item)}
-                          </div>
-                          <WarmupSummary warmup={item.warmup} styles={styles} />
-                          {item.repRange && (
-                            <div style={styles.rangeSummary}>
-                              Progression range: {getRepRange(item.repRange).id} reps
-                            </div>
-                          )}
-                          {!usedForProgression && (
-                            <div style={styles.progressionExcluded}>
-                              Not used for future recommendations
-                            </div>
-                          )}
-                          {session.workoutMode === "deload" && usedForProgression && (
-                            <div style={styles.progressionIncluded}>
-                              Used for future recommendations
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))
-            )
-          )}
-        </div>
+        <WorkoutHistory
+          sessions={sortedSessions}
+          onDelete={deleteSession}
+          onExport={exportData}
+          onImport={importData}
+          formatDate={formatDate}
+          styles={styles}
+        />
       </div>
     </div>
   );
@@ -1582,7 +1509,9 @@ const styles = {
     minHeight: 44,
     padding: 10,
     borderRadius: 8,
-    border: "1px solid #ccc",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#ccc",
     boxSizing: "border-box"
   },
   invalidInput: {
@@ -1646,7 +1575,9 @@ const styles = {
     display: "inline-block"
   },
   listItem: {
-    border: "1px solid #e3e3e3",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "#e3e3e3",
     borderRadius: 8,
     padding: 12,
     background: "#fff",
@@ -1777,7 +1708,10 @@ const styles = {
     color: "#555",
     marginTop: 10
   },
-  actualSummary: {
+  setFeedback: {
+    minHeight: 64,
+    lineHeight: 1.5,
+    fontSize: 14,
     fontWeight: 600,
     overflowWrap: "anywhere"
   },

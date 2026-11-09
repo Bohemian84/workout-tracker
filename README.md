@@ -8,6 +8,14 @@ This app saves workout history locally when signed out and can sync history betw
 - Exercises already in Current Session stay in place and are not duplicated. Drag to adjust the order as needed; saving the full session remembers that order for next time.
 - Ordering does not change recommendation targets or which workouts are used for progression.
 
+## Browsing history and editing on mobile
+
+- History shows five collapsed sessions at a time, newest first. Expand a session for its working sets, warm-ups, and progression details. Only one session is expanded at a time.
+- Search matches exercise names, session names, or dates (YYYY-MM-DD) across all saved sessions. Combine it with the month filter, or use the newer/older page arrows. Current Session links back to the workout without scrolling through the history.
+- Filtering, pagination, and minimizing only affect the display. All sessions remain saved and available to recommendations, Firebase sync, and Export. Deleting a session requires confirmation.
+- History is memoized independently from the workout form so rep edits do not re-render it. Working-set feedback keeps a stable space as a value is cleared and retyped, without adding a second alert at the bottom of the workout.
+- After a form edit, a two-frame guard repairs large scroll jumps that take the focused input off-screen. It does not lock scrolling: user gestures, focus changes, keyboard resizing, and viewport zoom/panning cancel the repair.
+
 ## Rep ranges and progression
 
 - Current Session records reps separately for each set, with one weight for the exercise. Add Exercise and recommendations prefill each set; the individual counts remain editable until the session is saved. Zero reps are allowed, but blank, negative, or fractional counts cannot be saved.
